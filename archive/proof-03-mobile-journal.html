@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Next Card Proof 03 Mobile</title>
+    <style>
+      :root {
+        --white: #ffffff;
+        --ink: #11130f;
+        --muted: #747a70;
+        --line: rgba(17, 19, 15, 0.13);
+        --line-soft: rgba(17, 19, 15, 0.07);
+        --moss: #5f7b61;
+        --ice: #d7ecef;
+        --ember: #cf5d31;
+        --gold: #c7a13c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow-x: hidden;
+        color: var(--ink);
+        background: var(--white);
+        font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+        letter-spacing: 0;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .app-page {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        min-height: 100vh;
+        min-height: 100dvh;
+        width: 100vw;
+        max-width: none;
+        margin: 0;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+        overflow: hidden;
+        background: var(--white);
+      }
+
+      .app-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .brand-mark {
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--ink);
+        background:
+          linear-gradient(135deg, transparent 0 47%, var(--ink) 48% 52%, transparent 53%),
+          linear-gradient(45deg, var(--moss) 0 48%, #74b8be 49% 100%);
+      }
+
+      .brand-text {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .brand-text strong {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .brand-text span,
+      .stamp {
+        display: none;
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .mode-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+        width: calc(100vw - 32px);
+        max-width: calc(100vw - 32px);
+        min-width: 0;
+        margin: 12px 0 18px;
+        padding: 4px;
+        border: 1px solid var(--line);
+      }
+
+      .mode-tabs button {
+        min-width: 0;
+        min-height: 36px;
+        border: 0;
+        color: var(--muted);
+        background: transparent;
+        font-size: 13px;
+        text-transform: lowercase;
+      }
+
+      .mode-tabs button.active {
+        color: var(--white);
+        background: var(--ink);
+      }
+
+      .proof-module {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      .module-head {
+        display: grid;
+        grid-template-columns: 82px minmax(0, 1fr);
+        gap: 14px;
+        align-items: end;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-no {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 76px;
+        font-weight: 400;
+        line-height: 0.78;
+      }
+
+      .head-copy {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .small-label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-family: Georgia, "Times New Roman", "Microsoft YaHei", serif;
+        font-size: 26px;
+        font-weight: 400;
+        line-height: 1.06;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+
+      h1 .line {
+        display: block;
+      }
+
+      .journal-window {
+        position: relative;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
+        margin-top: 12px;
+        overflow: hidden;
+        background: var(--white);
+      }
+
+      .journal-window::before {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        left: 0;
+        z-index: 3;
+        height: 1px;
+        content: "";
+        background: linear-gradient(90deg, transparent, rgba(17, 19, 15, 0.18), transparent);
+        pointer-events: none;
+      }
+
+      .journal-scroll {
+        height: calc(100dvh - 222px);
+        min-height: 510px;
+        max-height: 720px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        -webkit-mask-image: linear-gradient(
+          to bottom,
+          transparent 0%,
+          rgba(0, 0, 0, 0.18) 9%,
+          rgba(0, 0, 0, 0.72) 23%,
+          black 37%,
+          black 63%,
+          rgba(0, 0, 0, 0.72) 77%,
+          rgba(0, 0, 0, 0.18) 91%,
+          transparent 100%
+        );
+        mask-image: linear-gradient(
+          to bottom,
+          transparent 0%,
+          rgba(0, 0, 0, 0.18) 9%,
+          rgba(0, 0, 0, 0.72) 23%,
+          black 37%,
+          black 63%,
+          rgba(0, 0, 0, 0.72) 77%,
+          rgba(0, 0, 0, 0.18) 91%,
+          transparent 100%
+        );
+      }
+
+      .journal-scroll::-webkit-scrollbar {
+        display: none;
+      }
+
+      .journal-track {
+        display: grid;
+        gap: 0;
+        padding: 18vh 0 42vh;
+      }
+
+      .journal-entry {
+        display: grid;
+        grid-template-columns: 62px 18px minmax(0, 1fr);
+        gap: 10px;
+        min-height: 205px;
+      }
+
+      .journal-entry > * {
+        min-width: 0;
+      }
+
+      .journal-entry time {
+        padding-top: 27px;
+        color: var(--muted);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 17px;
+      }
+
+      .journal-line {
+        position: relative;
+        border-left: 1px solid var(--line);
+      }
+
+      .journal-line::before {
+        position: absolute;
+        top: 30px;
+        left: -7px;
+        width: 13px;
+        height: 13px;
+        content: "";
+        border: 1px solid var(--ink);
+        background: var(--white);
+      }
+
+      .completed-entry .journal-line::before {
+        background: var(--moss);
+      }
+
+      .burning-entry .journal-line::before {
+        background: var(--ember);
+      }
+
+      .frozen-entry .journal-line::before {
+        background: var(--ice);
+      }
+
+      .reward-entry .journal-line::before {
+        background: var(--gold);
+      }
+
+      .journal-card {
+        min-width: 0;
+        width: 100%;
+        max-width: calc(100vw - 122px);
+        overflow: hidden;
+        padding: 22px 0 28px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .journal-card h2 {
+        max-width: 100%;
+        margin-bottom: 10px;
+        font-size: 24px;
+        font-weight: 500;
+        line-height: 1.12;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+
+      .journal-card p {
+        max-width: 100%;
+        color: #4b5049;
+        font-size: 13px;
+        line-height: 1.72;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+
+      .journal-tags {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        max-width: 100%;
+        gap: 7px;
+        margin-top: 14px;
+      }
+
+      .journal-tags span {
+        max-width: 100%;
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: var(--white);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+
+      .scroll-hint {
+        position: absolute;
+        right: 0;
+        bottom: 14px;
+        left: 90px;
+        z-index: 4;
+        color: rgba(17, 19, 15, 0.34);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        pointer-events: none;
+      }
+
+      @media (min-width: 720px) {
+        .app-page {
+          max-width: 430px;
+          margin: 0 auto;
+          border-right: 1px solid var(--line);
+          border-left: 1px solid var(--line);
+        }
+      }
+
+      @media (max-width: 390px) {
+        .app-page {
+          padding-right: 14px;
+          padding-left: 14px;
+        }
+
+        .module-head {
+          grid-template-columns: 76px minmax(0, 1fr);
+          gap: 12px;
+        }
+
+        .section-no {
+          font-size: 70px;
+        }
+
+        .journal-entry {
+          grid-template-columns: 58px 18px minmax(0, 1fr);
+          gap: 9px;
+        }
+
+        .journal-card h2 {
+          font-size: 22px;
+        }
+
+        .journal-card {
+          max-width: calc(100vw - 112px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-page">
+      <header class="app-top" aria-label="Next Card proof module">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <strong>Next Card</strong>
+            <span>proof module</span>
+          </div>
+        </div>
+        <span class="stamp">local proof</span>
+      </header>
+
+      <nav class="mode-tabs" aria-label="Primary modes">
+        <button type="button">input</button>
+        <button type="button">deck</button>
+        <button class="active" type="button">proof</button>
+      </nav>
+
+      <section class="proof-module" aria-labelledby="journal-title">
+        <div class="module-head">
+          <div class="section-no">03</div>
+          <div class="head-copy">
+            <span class="small-label">Flow journal</span>
+            <h1 id="journal-title">
+              <span class="line">行为以时间线</span>
+              <span class="line">继续流动。</span>
+            </h1>
+          </div>
+        </div>
+
+        <div class="journal-window">
+          <div class="journal-scroll" aria-label="Proof flow journal, scrollable">
+            <div class="journal-track">
+              <article class="journal-entry completed-entry">
+                <time>08:12</time>
+                <div class="journal-line"></div>
+                <div class="journal-card">
+                  <h2>完成“整理高数课本<br />和上次作业页”。</h2>
+                  <p>
+                    来源为课程表文字识别。卡片处于 hot 阶段，实际用时 4 分钟，推进了“出门准备”节点。下一步建议：确认教室并把水杯放进包里。
+                  </p>
+                  <div class="journal-tags">
+                    <span>completed</span>
+                    <span>hot</span>
+                    <span>actual 4m</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="journal-entry burning-entry">
+                <time>08:19</time>
+                <div class="journal-line"></div>
+                <div class="journal-card">
+                  <h2>快速燃烧模式完成<br />一张最低可行动作卡。</h2>
+                  <p>
+                    双击先启动计时，三击进入 burning。6 分钟后完成“确认教室并出门”，proof 记录燃烧边缘、火花反馈和准时完成。
+                  </p>
+                  <div class="journal-tags">
+                    <span>burning-completed</span>
+                    <span>actual 6m</span>
+                    <span>reward pending</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="journal-entry frozen-entry">
+                <time>13:42</time>
+                <div class="journal-line"></div>
+                <div class="journal-card">
+                  <h2>“整理实验报告数据表”<br />选择先冻结。</h2>
+                  <p>
+                    下滑触发状态栏，继续下滑进入冻结提示。用户选择“先冻结”，上下文保存到重新安排队列，下一步建议为今晚 20:00 前恢复。
+                  </p>
+                  <div class="journal-tags">
+                    <span>frozen</span>
+                    <span>reschedule queue</span>
+                    <span>next 20:00</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="journal-entry reward-entry">
+                <time>21:06</time>
+                <div class="journal-line"></div>
+                <div class="journal-card">
+                  <h2>奖励卡生成：<br />把作业通知变成可提交草稿。</h2>
+                  <p>
+                    完成 5 张分解卡，比预计快 4 分钟。summary document 已更新，建议明早复查引用格式而不是继续扩写。
+                  </p>
+                  <div class="journal-tags">
+                    <span>rewarded</span>
+                    <span>faster by 4m</span>
+                    <span>summary updated</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="journal-entry completed-entry">
+                <time>22:18</time>
+                <div class="journal-line"></div>
+                <div class="journal-card">
+                  <h2>恢复冻结卡，<br />完成表头检查。</h2>
+                  <p>
+                    从 reschedule queue 回到实验报告 deck。保留冻结前上下文，没有重新规划，只完成一张 7 分钟内可结束的小卡。
+                  </p>
+                  <div class="journal-tags">
+                    <span>resumed</span>
+                    <span>actual 7m</span>
+                    <span>calm</span>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+          <div class="scroll-hint">touch / wheel to move</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
