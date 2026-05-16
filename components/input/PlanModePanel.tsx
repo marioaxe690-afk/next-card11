@@ -39,7 +39,7 @@ export function PlanModePanel() {
           </motion.div>
         )}
 
-        {analysisStatus === "analyzing" && (
+        {(analysisStatus === "thinking" || analysisStatus === "asking" || analysisStatus === "generating") && (
           <motion.div
             key="loading"
             initial={{ opacity: 0, y: 12 }}

@@ -1,6 +1,55 @@
 export type SourceType = "text" | "attachment" | "image" | "mixed";
 export type UrgencyStage = "calm" | "warm" | "hot" | "burning" | "expired";
 export type DamageEffect = "none" | "burn" | "freeze" | "crack" | "weathering";
+export type AnalysisStatus = "idle" | "thinking" | "asking" | "generating" | "ready";
+
+export type ThinkingStep = {
+  id: string;
+  role: "user" | "ai";
+  text: string;
+  tone?: "understanding" | "time" | "uncertainty" | "confirmation";
+};
+
+export type ChatRole = "user" | "ai";
+
+export type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  text: string;
+  tone?: "understanding" | "time" | "uncertainty" | "confirmation" | "reply";
+  pending?: boolean;
+  createdAt: string;
+};
+
+export type AIPhase = "thinking" | "asking" | "generating" | "ready";
+
+export type AIReplyPayload = {
+  reply: string;
+  next_phase: AIPhase;
+  question?: ClarifyingQuestion | null;
+  plans?: PlanOption[] | null;
+  analysis_patch?: Partial<AnalysisResult> | null;
+};
+
+export type ClarificationOption = {
+  id: string;
+  label: string;
+  effect: string;
+};
+
+export type ClarifyingQuestion = {
+  id: string;
+  question: string;
+  options: ClarificationOption[];
+  defaultOptionId: string;
+};
+
+export type ClarificationAnswer = {
+  questionId: string;
+  optionId: string;
+  label: string;
+  effect: string;
+};
 
 export type UploadedAttachment = {
   id: string;

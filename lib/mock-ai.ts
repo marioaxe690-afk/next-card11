@@ -1,12 +1,15 @@
 import type {
   AnalysisResult,
+  ClarificationAnswer,
+  ClarifyingQuestion,
   InputsState,
   PlanOption,
   ProofRecord,
   SourceType,
   TaskCard,
   TaskDeck,
-  TaskFlowState
+  TaskFlowState,
+  ThinkingStep
 } from "@/lib/types";
 
 const courseSignals = ["高数", "课程", "上课", "课表", "早八", "教室"];
@@ -53,6 +56,27 @@ function normalizeGoal(text: string) {
 function hasAny(text: string, signals: string[]) {
   const lower = text.toLowerCase();
   return signals.some((signal) => lower.includes(signal.toLowerCase()));
+}
+
+function getParsedInputText(input: InputsState) {
+  return [input.text, input.parsedText, input.imageSchedule?.parsedTimetable]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function getInputKind(input: InputsState, analysis?: AnalysisResult) {
+  const parsedText = getParsedInputText(input);
+  const analysisText = analysis?.goalUnderstanding ?? "";
+
+  if (hasAny(`${parsedText} ${analysisText}`, courseSignals)) {
+    return "course";
+  }
+
+  if (hasAny(`${parsedText} ${analysisText}`, assignmentSignals)) {
+    return "assignment";
+  }
+
+  return "general";
 }
 
 export function mockAnalyzeInput(input: InputsState): AnalysisResult {
@@ -126,7 +150,119 @@ export function mockAnalyzeInput(input: InputsState): AnalysisResult {
   };
 }
 
-export function mockGeneratePlanOptions(analysis: AnalysisResult): PlanOption[] {
+export function mockGenerateThinkingSteps(input: InputsState, analysis: AnalysisResult): ThinkingStep[] {
+  const goal = normalizeGoal(input.text || input.parsedText || input.imageSchedule?.parsedTimetable || "");
+  const kind = getInputKind(input, analysis);
+  const uncertainty =
+    kind === "course"
+      ? "我还需要判断:先确认时间教室,还是先把你推到出门准备。"
+      : kind === "assignment"
+        ? "我还需要判断:先保最低可提交,还是先把要求读清楚。"
+        : "我还需要判断:你想今天推进,还是只启动一个低压力小动作。";
+
+  return [
+    { id: "thinking-user-input", role: "user", text: goal },
+    { id: "thinking-understanding", role: "ai", tone: "understanding", text: analysis.goalUnderstanding },
+    {
+      id: "thinking-time",
+      role: "ai",
+      tone: "time",
+      text: `我抓到的时间线是:${analysis.deadlineLabel},建议窗口是 ${analysis.availableWindow}。`
+    },
+    { id: "thinking-uncertainty", role: "ai", tone: "uncertainty", text: uncertainty }
+  ];
+}
+
+export function mockGenerateClarifyingQuestion(input: InputsState, analysis: AnalysisResult): ClarifyingQuestion {
+  const kind = getInputKind(input, analysis);
+
+  if (kind === "course") {
+    return {
+      id: "clarify-course-priority",
+      question: "你现在更需要先确认时间和教室,还是先准备出门?",
+      defaultOptionId: "course-info",
+      options: [
+        { id: "course-info", label: "先确认时间和教室", effect: "把第一步聚焦到时间、教室和路线入口,避免走错方向。" },
+        { id: "course-pack", label: "先准备出门物品", effect: "把第一步聚焦到教材、笔和上次作业页,马上进入离开前动作。" },
+        { id: "course-short", label: "直接生成最短行动卡", effect: "压缩成最短可执行链路,用最少确认直接开始行动。" }
+      ]
+    };
+  }
+
+  if (kind === "assignment") {
+    return {
+      id: "clarify-assignment-priority",
+      question: "这次作业你更想先保住最低可提交版本,还是先读清要求?",
+      defaultOptionId: "assignment-minimum",
+      options: [
+        { id: "assignment-minimum", label: "先做最低可提交版本", effect: "把第一步聚焦到必须提交点和最低可交边界。" },
+        { id: "assignment-read", label: "先读清要求", effect: "先圈出格式、截止和必须包含内容,再进入草稿。" },
+        { id: "assignment-draft", label: "先写 10 分钟草稿", effect: "直接进入短草稿,不先做长时间规划。" }
+      ]
+    };
+  }
+
+  return {
+    id: "clarify-general-priority",
+    question: "这个目标你想今天完成一轮,还是先启动一个 10 分钟小动作?",
+    defaultOptionId: "general-ten",
+    options: [
+      { id: "general-today", label: "今天完成一轮", effect: "把方案聚焦到今天内形成可见结果。" },
+      { id: "general-ten", label: "先做 10 分钟", effect: "把第一步压到 10 分钟内,降低启动阻力。" },
+      { id: "general-gentle", label: "低压力推进", effect: "保留冻结和稍后继续,不追求一次做完。" }
+    ]
+  };
+}
+
+export function mockApplyClarificationAnswer(
+  analysis: AnalysisResult,
+  answer: ClarificationAnswer | null
+): AnalysisResult {
+  if (!answer) {
+    return analysis;
+  }
+
+  return {
+    ...analysis,
+    constraints: [`用户补充偏好:${answer.label}`, ...analysis.constraints].slice(0, 4),
+    timeStrategy: [`按「${answer.label}」优先生成第一张行动卡`, ...analysis.timeStrategy].slice(0, 4)
+  };
+}
+
+function applyClarificationToOptions(options: PlanOption[], answer: ClarificationAnswer | null): PlanOption[] {
+  if (!answer) {
+    return options;
+  }
+
+  const firstStepByAnswer: Record<string, string> = {
+    "course-info": "确认高数课时间、教室和路线入口",
+    "course-pack": "把教材、笔、上次作业页和出门物品放进包里",
+    "course-short": "直接打开课表确认下一步,然后立刻出门",
+    "assignment-minimum": "圈出必须提交的 3 个点,并写下最低可提交边界",
+    "assignment-read": "读一遍要求,只标出截止、格式和必须包含内容",
+    "assignment-draft": "打开文档,连续写 10 分钟最低草稿",
+    "general-today": "写下今天内可见完成的一轮结果",
+    "general-ten": "只做 10 分钟内能完成的第一步",
+    "general-gentle": "选择一个低压力小动作,并保留冻结出口"
+  };
+  const summarySuffix = ` 已按「${answer.label}」调整第一张卡。`;
+
+  return options.map((option) => {
+    const firstStep = firstStepByAnswer[answer.optionId] ?? option.steps[0];
+
+    return {
+      ...option,
+      summary: `${option.summary}${summarySuffix}`,
+      estimatedTime: answer.optionId.endsWith("short") && option.id === "plan-1" ? "12 min" : option.estimatedTime,
+      steps: option.steps.map((step, index) => (index === 0 ? firstStep : step))
+    };
+  });
+}
+
+export function mockGeneratePlanOptions(
+  analysis: AnalysisResult,
+  clarificationAnswer: ClarificationAnswer | null = null
+): PlanOption[] {
   const isCourse = analysis.goalUnderstanding.includes("出门") || analysis.goalUnderstanding.includes("到课");
   const urgentSteps = isCourse
     ? ["确认上课时间和地点", "把教材、笔、上次作业页放进包里", "立刻出门并保留 5 分钟缓冲", "到教室后打开今天要用的页面"]
@@ -138,12 +274,12 @@ export function mockGeneratePlanOptions(analysis: AnalysisResult): PlanOption[] 
     ? ["只确认下一步要去哪", "慢速整理必带物品", "给自己留出可冻结缓冲", "到达后做一个轻量开场动作"]
     : ["写下任务边界", "只做第一个小段", "冻结不必要分支", "留下下一次继续的上下文"];
 
-  return [
+  const options: PlanOption[] = [
     {
       id: "plan-1",
       name: "方案一",
       style: "urgent",
-      summary: "先保护最小可行动作，适合时间紧或已经接近最佳窗口时使用。",
+      summary: "先保护最小可行动作,适合时间紧或已经接近最佳窗口时使用。",
       estimatedTime: isCourse ? "18 min" : "32 min",
       detailLevel: "high",
       steps: urgentSteps
@@ -152,7 +288,7 @@ export function mockGeneratePlanOptions(analysis: AnalysisResult): PlanOption[] 
       id: "plan-2",
       name: "方案二",
       style: "balanced",
-      summary: "速度和完整度平衡，适合正常推进，卡片节奏更稳定。",
+      summary: "速度和完整度平衡,适合正常推进,卡片节奏更稳定。",
       estimatedTime: isCourse ? "28 min" : "45 min",
       detailLevel: "medium",
       steps: balancedSteps
@@ -161,19 +297,25 @@ export function mockGeneratePlanOptions(analysis: AnalysisResult): PlanOption[] 
       id: "plan-3",
       name: "方案三",
       style: "gentle",
-      summary: "低压力版本，允许中途冻结，适合疲劳、焦虑或长期目标。",
+      summary: "低压力版本,允许中途冻结,适合疲劳、焦虑或长期目标。",
       estimatedTime: isCourse ? "35 min" : "60 min",
       detailLevel: "low",
       steps: gentleSteps
     }
   ];
+
+  return applyClarificationToOptions(options, clarificationAnswer);
 }
 
-export function mockRegeneratePlanOptions(input: InputsState, previousOptions: PlanOption[]): PlanOption[] {
+export function mockRegeneratePlanOptions(
+  input: InputsState,
+  previousOptions: PlanOption[],
+  clarificationAnswer: ClarificationAnswer | null = null
+): PlanOption[] {
   const analysis = mockAnalyzeInput(input);
   const suffixes = ["更短启动", "更稳节奏", "更低压力"];
 
-  return mockGeneratePlanOptions(analysis).map((option, index) => ({
+  return mockGeneratePlanOptions(analysis, clarificationAnswer).map((option, index) => ({
     ...option,
     summary: `${option.summary} 这次重新生成会偏向${suffixes[index]}。`,
     estimatedTime:
@@ -182,7 +324,7 @@ export function mockRegeneratePlanOptions(input: InputsState, previousOptions: P
           ? "15 min"
           : option.estimatedTime
         : option.estimatedTime,
-    steps: option.steps.map((step, stepIndex) => (stepIndex === 0 ? `${step}，并写下下一步` : step))
+    steps: option.steps.map((step, stepIndex) => (stepIndex === 0 ? `${step},并写下下一步` : step))
   }));
 }
 

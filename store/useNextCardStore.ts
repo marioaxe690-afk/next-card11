@@ -4,15 +4,25 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
   mockAnalyzeInput,
+  mockApplyClarificationAnswer,
+  mockGenerateClarifyingQuestion,
   mockGenerateDeckFromPlan,
   mockGeneratePlanOptions,
   mockGenerateProofSummary,
   mockGenerateTaskFlow,
+  mockGenerateThinkingSteps,
   mockRegeneratePlanOptions
 } from "@/lib/mock-ai";
+import { callChatApi } from "@/lib/ai-client";
+import { buildContextNote } from "@/lib/ai-prompts";
 import type {
   ActiveOverlay,
+  AIReplyPayload,
   AnalysisResult,
+  AnalysisStatus,
+  ChatMessage,
+  ClarificationAnswer,
+  ClarifyingQuestion,
   DeckState,
   InputsState,
   LastCompletion,
@@ -25,18 +35,27 @@ import type {
   TaskCard,
   TaskDeck,
   TaskFlowState,
+  ThinkingStep,
   OverlayType,
   UploadedAttachment,
   UploadedImage
 } from "@/lib/types";
 
-type AnalysisStatus = "idle" | "analyzing" | "ready";
+const TURN_BUDGET_TOTAL = 5;
 
 type NextCardStore = {
   mode: Mode;
   inputs: InputsState;
   analysis: AnalysisResult | null;
   analysisStatus: AnalysisStatus;
+  thinkingSteps: ThinkingStep[];
+  revealedThinkingCount: number;
+  messages: ChatMessage[];
+  isAiResponding: boolean;
+  aiFallback: boolean;
+  clarifyingQuestion: ClarifyingQuestion | null;
+  clarificationAnswer: ClarificationAnswer | null;
+  turnCount: number;
   plans: PlansState;
   taskFlow: TaskFlowState | null;
   deck: DeckState;
@@ -62,9 +81,10 @@ type NextCardStore = {
   addDocumentUpload: (file: File) => void;
   removeInputAttachment: (id: string) => void;
   removeImageUpload: (id?: string) => void;
-  analyzeInput: () => void;
-  finishAnalysis: () => void;
-  submitGoalAndCreateDeck: () => void;
+  submitInputForUnderstanding: () => void;
+  sendChatMessage: (text: string) => Promise<void>;
+  answerClarifyingQuestion: (optionId: string) => void;
+  generatePlansFromClarification: () => void;
   resetInputDraft: () => void;
   regeneratePlans: () => void;
   selectPlan: (planId: PlanOption["id"]) => void;
@@ -117,13 +137,13 @@ const mockAttachment = (): UploadedAttachment => ({
   id: `attachment-${Date.now()}`,
   name: "assignment-notice.txt",
   kind: "notice",
-  mockedText: "课程作业通知：今晚 20:00 前提交一页简短分析，需包含观点、例子和结论。"
+  mockedText: "课程作业通知:今晚 20:00 前提交一页简短分析,需包含观点、例子和结论。"
 });
 
 const mockImage = (): UploadedImage => ({
   id: `image-${Date.now()}`,
   name: "mock-timetable.png",
-  parsedTimetable: "图像课表识别：明天 08:00 高数课，地点二教 304，建议提前 20 分钟出门。"
+  parsedTimetable: "图像课表识别:明天 08:00 高数课,地点二教 304,建议提前 20 分钟出门。"
 });
 
 function makeDocumentAttachment(file: File): UploadedAttachment {
@@ -131,7 +151,7 @@ function makeDocumentAttachment(file: File): UploadedAttachment {
     id: `document-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
     name: file.name || "未命名文档",
     kind: "document",
-    mockedText: `已添加文档：${file.name || "未命名文档"}。稍后可接入真实解析，现在先按文档目标生成行动卡。`,
+    mockedText: `已添加文档:${file.name || "未命名文档"}。稍后可接入真实解析,现在先按文档目标生成行动卡。`,
     size: file.size,
     mimeType: file.type || undefined
   };
@@ -141,7 +161,7 @@ function makeImageUpload(file: File): UploadedImage {
   return {
     id: `image-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
     name: file.name || "已添加图片",
-    parsedTimetable: `已添加图片：${file.name || "图片"}。稍后可接入图库 OCR，现在先按图片内容生成行动卡。`,
+    parsedTimetable: `已添加图片:${file.name || "图片"}。稍后可接入图库 OCR,现在先按图片内容生成行动卡。`,
     size: file.size,
     mimeType: file.type || undefined
   };
@@ -176,8 +196,8 @@ function getSourceType(inputs: Pick<InputsState, "text" | "attachments" | "image
 }
 
 const makeProofId = () => `proof-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
-
 const makeRewardId = () => `reward-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
+const makeMessageId = () => `msg-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
 
 function getActualMinutes(card: TaskCard) {
   const startedSeconds = card.startedAt
@@ -307,9 +327,214 @@ function makeInitialProofRecord(
         : ["生成执行卡组"],
     lastDamageEffect: generatedDeck.cards[0]?.damageEffect === "burn" ? "burn" : undefined,
     lastAction: `选择${selected.name}并生成任务流`,
-    nextSuggestion: "进入 deck，先完成第一张最小行动卡",
+    nextSuggestion: "进入 deck,先完成第一张最小行动卡",
     createdAt: new Date().toISOString()
   };
+}
+
+function makeClarificationAnswer(
+  question: ClarifyingQuestion | null,
+  optionId?: string | null
+): ClarificationAnswer | null {
+  if (!question) {
+    return null;
+  }
+
+  const option = question.options.find((item) => item.id === optionId) ??
+    question.options.find((item) => item.id === question.defaultOptionId) ??
+    question.options[0];
+
+  if (!option) {
+    return null;
+  }
+
+  return {
+    questionId: question.id,
+    optionId: option.id,
+    label: option.label,
+    effect: option.effect
+  };
+}
+
+type StoreGet = () => NextCardStore;
+type StoreSet = (
+  partial: Partial<NextCardStore> | ((state: NextCardStore) => Partial<NextCardStore> | NextCardStore)
+) => void;
+
+function applyAnalysisPatch(
+  current: AnalysisResult | null,
+  fallback: AnalysisResult,
+  patch: AIReplyPayload["analysis_patch"]
+): AnalysisResult {
+  const base = current ?? fallback;
+  if (!patch) {
+    return base;
+  }
+
+  return {
+    ...base,
+    goalUnderstanding: patch.goalUnderstanding ?? base.goalUnderstanding,
+    constraints: patch.constraints && patch.constraints.length > 0 ? patch.constraints : base.constraints,
+    stages: patch.stages ?? base.stages,
+    timeStrategy: patch.timeStrategy && patch.timeStrategy.length > 0 ? patch.timeStrategy : base.timeStrategy,
+    deadlineLabel: patch.deadlineLabel ?? base.deadlineLabel,
+    availableWindow: patch.availableWindow ?? base.availableWindow,
+    suggestedStart: patch.suggestedStart ?? base.suggestedStart,
+    sourceType: patch.sourceType ?? base.sourceType
+  };
+}
+
+function statusFromPhase(phase: AIReplyPayload["next_phase"]): AnalysisStatus {
+  switch (phase) {
+    case "thinking":
+      return "thinking";
+    case "asking":
+      return "asking";
+    case "generating":
+      return "generating";
+    case "ready":
+      return "ready";
+    default:
+      return "thinking";
+  }
+}
+
+function normalizeForCompare(text: string): string {
+  return text.replace(/\s+/g, "").replace(/[。?!,.,?!:;~""''「」]/g, "").toLowerCase();
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const setA = new Set(a.split(""));
+  const setB = new Set(b.split(""));
+  const intersection = [...setA].filter((c) => setB.has(c)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function detectRepetitiveQuestion(messages: ChatMessage[], newReply: string): boolean {
+  const aiTexts = messages
+    .filter((m) => m.role === "ai")
+    .slice(-3)
+    .map((m) => normalizeForCompare(m.text));
+  const candidate = normalizeForCompare(newReply);
+
+  if (candidate.length < 6) return false;
+
+  return aiTexts.some((prev) => prev.length >= 6 && jaccardSimilarity(prev, candidate) > 0.78);
+}
+
+function enforceTurnBudget(
+  payload: AIReplyPayload,
+  turnCount: number,
+  messages: ChatMessage[]
+): AIReplyPayload {
+  const used = turnCount + 1;
+  const remaining = Math.max(0, TURN_BUDGET_TOTAL - used);
+
+  if (remaining <= 0) {
+    return {
+      ...payload,
+      next_phase: "ready",
+      reply: payload.next_phase === "ready" ? payload.reply : "OK,我直接给你三套方案,不对再说。"
+    };
+  }
+
+  if (remaining <= 1 && (payload.next_phase === "thinking" || payload.next_phase === "asking")) {
+    return { ...payload, next_phase: "ready", reply: "够清楚了,直接看下面三个方案。" };
+  }
+
+  if (used >= 3 && payload.next_phase === "thinking") {
+    return { ...payload, next_phase: "asking" };
+  }
+
+  if (detectRepetitiveQuestion(messages, payload.reply)) {
+    if (payload.next_phase === "thinking" || payload.next_phase === "asking") {
+      return { ...payload, next_phase: "ready", reply: "我刚才已经问过类似的——直接给你方案,不对再调。" };
+    }
+  }
+
+  return payload;
+}
+
+async function requestAiTurn(get: StoreGet, set: StoreSet): Promise<void> {
+  const state = get();
+  const turnBudget = { used: state.turnCount, total: TURN_BUDGET_TOTAL };
+  const contextNote = buildContextNote(state.inputs, turnBudget);
+
+  try {
+    const { payload: rawPayload, fallback } = await callChatApi(state.messages, contextNote);
+    const payload = enforceTurnBudget(rawPayload, state.turnCount, state.messages);
+
+    set((current) => {
+      const aiMessage: ChatMessage = {
+        id: makeMessageId(),
+        role: "ai",
+        text: payload.reply,
+        tone:
+          payload.next_phase === "asking"
+            ? "uncertainty"
+            : payload.next_phase === "generating" || payload.next_phase === "ready"
+              ? "confirmation"
+              : "understanding",
+        createdAt: new Date().toISOString()
+      };
+
+      const baselineAnalysis = current.analysis ?? mockAnalyzeInput(current.inputs);
+      const nextAnalysis = applyAnalysisPatch(current.analysis, baselineAnalysis, payload.analysis_patch);
+      const nextStatus = statusFromPhase(payload.next_phase);
+
+      const validatedQuestion =
+        payload.next_phase === "asking" && payload.question && payload.question.options?.length
+          ? payload.question
+          : nextStatus === "asking"
+            ? current.clarifyingQuestion ?? mockGenerateClarifyingQuestion(current.inputs, nextAnalysis)
+            : current.clarifyingQuestion;
+
+      const validatedPlans =
+        payload.next_phase === "ready" && payload.plans && payload.plans.length === 3
+          ? payload.plans
+          : nextStatus === "ready"
+            ? mockGeneratePlanOptions(nextAnalysis, current.clarificationAnswer)
+            : current.plans.options;
+
+      return {
+        ...current,
+        analysis: nextAnalysis,
+        analysisStatus: nextStatus,
+        isAiResponding: false,
+        aiFallback: fallback,
+        messages: [...current.messages, aiMessage],
+        clarifyingQuestion: validatedQuestion ?? null,
+        turnCount: current.turnCount + 1,
+        plans: {
+          ...current.plans,
+          goalUnderstanding: nextAnalysis.goalUnderstanding,
+          constraints: nextAnalysis.constraints,
+          timeStrategy: nextAnalysis.timeStrategy,
+          options: nextStatus === "ready" ? validatedPlans : current.plans.options,
+          selectedPlanId: nextStatus === "ready" ? null : current.plans.selectedPlanId
+        }
+      };
+    });
+  } catch (error) {
+    console.error("[ai] turn failed", error);
+    set((current) => ({
+      ...current,
+      isAiResponding: false,
+      aiFallback: true,
+      messages: [
+        ...current.messages,
+        {
+          id: makeMessageId(),
+          role: "ai",
+          text: "(连不上 AI 服务,再说一句或重试。)",
+          tone: "uncertainty",
+          createdAt: new Date().toISOString()
+        }
+      ]
+    }));
+  }
 }
 
 export const useNextCardStore = create<NextCardStore>()(
@@ -319,6 +544,14 @@ export const useNextCardStore = create<NextCardStore>()(
       inputs: defaultInputs,
       analysis: null,
       analysisStatus: "idle",
+      thinkingSteps: [],
+      revealedThinkingCount: 0,
+      messages: [],
+      isAiResponding: false,
+      aiFallback: false,
+      clarifyingQuestion: null,
+      clarificationAnswer: null,
+      turnCount: 0,
       plans: defaultPlans,
       taskFlow: null,
       deck: defaultDeck,
@@ -457,106 +690,194 @@ export const useNextCardStore = create<NextCardStore>()(
             }
           };
         }),
-      analyzeInput: () => {
-        const state = get();
-        const analysis = mockAnalyzeInput(state.inputs);
-
-        set({
-          analysis,
-          analysisStatus: "analyzing",
-          plans: {
-            ...defaultPlans,
-            goalUnderstanding: analysis.goalUnderstanding,
-            constraints: analysis.constraints,
-            timeStrategy: analysis.timeStrategy
-          },
-          taskFlow: null
-        });
-      },
-      finishAnalysis: () => {
-        const state = get();
-        const analysis = state.analysis ?? mockAnalyzeInput(state.inputs);
-        const options = mockGeneratePlanOptions(analysis);
-
-        set({
-          analysis,
-          analysisStatus: "ready",
-          plans: {
-            goalUnderstanding: analysis.goalUnderstanding,
-            constraints: analysis.constraints,
-            timeStrategy: analysis.timeStrategy,
-            options,
-            selectedPlanId: null,
-            regenerateCount: state.plans.regenerateCount
-          }
-        });
-      },
-      submitGoalAndCreateDeck: () => {
+      submitInputForUnderstanding: () => {
         const state = get();
 
         if (!state.inputs.text.trim() && state.inputs.attachments.length === 0 && !state.inputs.imageSchedule) {
           return;
         }
 
-        const analysis = mockAnalyzeInput(state.inputs);
-        const options = mockGeneratePlanOptions(analysis);
-        const selected = options[0];
-        const taskFlow = mockGenerateTaskFlow(selected);
-        const goalTitle = state.inputs.text.trim() || (state.inputs.imageSchedule ? "去高数课" : "今日推进");
-        const generatedDeck = mockGenerateDeckFromPlan(selected, taskFlow, goalTitle);
-        const proofRecord = makeInitialProofRecord(generatedDeck, selected, state.inputs.sourceType);
-        const records = [proofRecord, ...state.proofs.records];
+        const userText = state.inputs.text.trim() ||
+          (state.inputs.imageSchedule?.parsedTimetable ?? state.inputs.parsedText ?? "");
+
+        const userMessage: ChatMessage = {
+          id: makeMessageId(),
+          role: "user",
+          text: userText,
+          createdAt: new Date().toISOString()
+        };
+
+        const baselineAnalysis = mockAnalyzeInput(state.inputs);
+        const baselineThinking = mockGenerateThinkingSteps(state.inputs, baselineAnalysis);
 
         set({
-          analysis,
-          analysisStatus: "ready",
+          analysis: baselineAnalysis,
+          analysisStatus: "thinking",
+          thinkingSteps: baselineThinking,
+          revealedThinkingCount: 1,
+          messages: [userMessage],
+          isAiResponding: true,
+          aiFallback: false,
+          clarifyingQuestion: null,
+          clarificationAnswer: null,
+          turnCount: 0,
           plans: {
-            goalUnderstanding: analysis.goalUnderstanding,
-            constraints: analysis.constraints,
-            timeStrategy: analysis.timeStrategy,
-            options,
-            selectedPlanId: selected.id,
+            ...defaultPlans,
+            goalUnderstanding: baselineAnalysis.goalUnderstanding,
+            constraints: baselineAnalysis.constraints,
+            timeStrategy: baselineAnalysis.timeStrategy,
             regenerateCount: state.plans.regenerateCount
           },
-          taskFlow,
-          deck: {
-            ...state.deck,
-            decks: [generatedDeck, ...state.deck.decks.filter((deck) => deck.coverTitle !== generatedDeck.coverTitle)],
-            activeDeckId: generatedDeck.id,
-            currentCardId: generatedDeck.cards[0]?.id ?? null
-          },
-          proofs: {
-            records,
-            summaryDocument: mockGenerateProofSummary(records)
-          }
+          taskFlow: null
         });
+
+        void requestAiTurn(get, set);
+      },
+      sendChatMessage: async (text: string) => {
+        const trimmed = text.trim();
+        if (!trimmed) {
+          return;
+        }
+
+        const state = get();
+        if (state.isAiResponding) {
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: makeMessageId(),
+          role: "user",
+          text: trimmed,
+          createdAt: new Date().toISOString()
+        };
+
+        set({
+          messages: [...state.messages, userMessage],
+          isAiResponding: true,
+          aiFallback: false
+        });
+
+        await requestAiTurn(get, set);
+      },
+      answerClarifyingQuestion: (optionId) => {
+        const state = get();
+        const baseAnalysis = state.analysis ?? mockAnalyzeInput(state.inputs);
+        const question = state.clarifyingQuestion ?? mockGenerateClarifyingQuestion(state.inputs, baseAnalysis);
+        const answer = makeClarificationAnswer(question, optionId);
+
+        if (!answer || state.isAiResponding) {
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: makeMessageId(),
+          role: "user",
+          text: `我选「${answer.label}」。`,
+          createdAt: new Date().toISOString()
+        };
+
+        set({
+          analysisStatus: "generating",
+          clarifyingQuestion: question,
+          clarificationAnswer: answer,
+          messages: [...state.messages, userMessage],
+          isAiResponding: true,
+          aiFallback: false,
+          plans: {
+            ...state.plans,
+            options: [],
+            selectedPlanId: null
+          },
+          taskFlow: null
+        });
+
+        void requestAiTurn(get, set);
+      },
+      generatePlansFromClarification: () => {
+        const state = get();
+        const baseAnalysis = state.analysis ?? mockAnalyzeInput(state.inputs);
+        const question = state.clarifyingQuestion ?? mockGenerateClarifyingQuestion(state.inputs, baseAnalysis);
+        const answer = state.clarificationAnswer ?? makeClarificationAnswer(question);
+
+        if (!answer || state.isAiResponding) {
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: makeMessageId(),
+          role: "user",
+          text: `按默认理解(${answer.label})直接给方案。`,
+          createdAt: new Date().toISOString()
+        };
+
+        set({
+          analysisStatus: "generating",
+          clarifyingQuestion: question,
+          clarificationAnswer: answer,
+          messages: [...state.messages, userMessage],
+          isAiResponding: true,
+          aiFallback: false,
+          plans: {
+            ...state.plans,
+            options: [],
+            selectedPlanId: null
+          },
+          taskFlow: null
+        });
+
+        void requestAiTurn(get, set);
       },
       resetInputDraft: () =>
         set({
           inputs: defaultInputs,
           analysis: null,
           analysisStatus: "idle",
+          thinkingSteps: [],
+          revealedThinkingCount: 0,
+          messages: [],
+          isAiResponding: false,
+          aiFallback: false,
+          clarifyingQuestion: null,
+          clarificationAnswer: null,
+          turnCount: 0,
           plans: defaultPlans,
           taskFlow: null
         }),
       regeneratePlans: () => {
         const state = get();
-        const analysis = mockAnalyzeInput(state.inputs);
-        const options = mockRegeneratePlanOptions(state.inputs, state.plans.options);
+
+        if (state.isAiResponding) {
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: makeMessageId(),
+          role: "user",
+          text: "这三个方案不太对,再换一组。",
+          createdAt: new Date().toISOString()
+        };
+
+        const fallbackOptions = mockRegeneratePlanOptions(
+          state.inputs,
+          state.plans.options,
+          state.clarificationAnswer
+        );
 
         set({
-          analysis,
-          analysisStatus: "ready",
+          analysisStatus: "generating",
+          messages: [...state.messages, userMessage],
+          isAiResponding: true,
+          aiFallback: false,
           plans: {
-            goalUnderstanding: analysis.goalUnderstanding,
-            constraints: analysis.constraints,
-            timeStrategy: analysis.timeStrategy,
-            options,
+            ...state.plans,
+            options: fallbackOptions,
             selectedPlanId: null,
             regenerateCount: state.plans.regenerateCount + 1
           },
           taskFlow: null
         });
+
+        void requestAiTurn(get, set);
       },
       selectPlan: (planId) => {
         const state = get();
@@ -637,9 +958,9 @@ export const useNextCardStore = create<NextCardStore>()(
             ...getDeckProofProgress(updatedDeck, state.deck.frozenCardIds.length),
             actualMinutes: 0,
             timeStatus: "on-time",
-            timeDamageEvents: ["双击卡片，开始专注计时"],
-            lastAction: `开始计时：${currentCard.title}`,
-            nextSuggestion: "完成这张卡，或下滑查看状态后选择冻结",
+            timeDamageEvents: ["双击卡片,开始专注计时"],
+            lastAction: `开始计时:${currentCard.title}`,
+            nextSuggestion: "完成这张卡,或下滑查看状态后选择冻结",
             createdAt: new Date().toISOString()
           };
           const records = [proofRecord, ...state.proofs.records];
@@ -677,7 +998,7 @@ export const useNextCardStore = create<NextCardStore>()(
                   damageProgress: 100,
                   burnLevel: 3 as const,
                   remainingSeconds: 0,
-                  cardBackNote: "这组任务已经因燃烧失败锁定，不能继续打卡。"
+                  cardBackNote: "这组任务已经因燃烧失败锁定,不能继续打卡。"
                 }
           );
           const completedCount = cards.filter((card) => card.status === "completed" || card.status === "rewarded").length;
@@ -696,10 +1017,10 @@ export const useNextCardStore = create<NextCardStore>()(
             ...getDeckProofProgress(updatedDeck, cards.filter((card) => card.status === "frozen").length),
             actualMinutes: getDeckActualMinutes(activeDeck.cards),
             timeStatus: "expired",
-            timeDamageEvents: ["上滑触发燃烧失败，整组任务停止后续打卡"],
+            timeDamageEvents: ["上滑触发燃烧失败,整组任务停止后续打卡"],
             lastDamageEffect: "burn",
-            lastAction: `任务失败：${activeDeck.coverTitle}`,
-            nextSuggestion: "该任务已锁定。需要重做时，请从 Input 新建一个新任务。",
+            lastAction: `任务失败:${activeDeck.coverTitle}`,
+            nextSuggestion: "该任务已锁定。需要重做时,请从 Input 新建一个新任务。",
             createdAt: new Date().toISOString()
           };
           const records = [proofRecord, ...state.proofs.records];
@@ -745,7 +1066,7 @@ export const useNextCardStore = create<NextCardStore>()(
                   urgencyStage: "calm" as const,
                   burnLevel: 0 as const,
                   suggestedStartAt: card.suggestedStartAt ?? new Date().toISOString(),
-                  cardBackNote: "整组任务已冻结在后台，后续卡片停止打卡。"
+                  cardBackNote: "整组任务已冻结在后台,后续卡片停止打卡。"
                 }
           );
           const frozenIds = cards.filter((card) => card.status === "frozen").map((card) => card.id);
@@ -765,10 +1086,10 @@ export const useNextCardStore = create<NextCardStore>()(
             ...getDeckProofProgress(updatedDeck, frozenIds.length),
             actualMinutes: currentCard ? getActualMinutes(currentCard) : getDeckActualMinutes(activeDeck.cards),
             timeStatus: "frozen-rescheduled",
-            timeDamageEvents: ["右滑冻结整组任务，停止后续卡片打卡"],
+            timeDamageEvents: ["右滑冻结整组任务,停止后续卡片打卡"],
             lastDamageEffect: "freeze",
-            lastAction: `冻结任务：${activeDeck.coverTitle}`,
-            nextSuggestion: "任务已冻结在后台。需要恢复时，从任务记录重新规划，不继续当前卡组。",
+            lastAction: `冻结任务:${activeDeck.coverTitle}`,
+            nextSuggestion: "任务已冻结在后台。需要恢复时,从任务记录重新规划,不继续当前卡组。",
             createdAt: new Date().toISOString()
           };
           const records = [proofRecord, ...state.proofs.records];
@@ -828,7 +1149,7 @@ export const useNextCardStore = create<NextCardStore>()(
                 id: makeRewardId(),
                 deckId: activeDeck.id,
                 title: `${activeDeck.coverTitle} 已变成行动证据`,
-                summary: `完成 ${completedCount} 张分解卡，实际投入约 ${cards.reduce((sum, card) => sum + Math.ceil(card.elapsedSeconds / 60), 0)} 分钟。`,
+                summary: `完成 ${completedCount} 张分解卡,实际投入约 ${cards.reduce((sum, card) => sum + Math.ceil(card.elapsedSeconds / 60), 0)} 分钟。`,
                 actualMinutes: cards.reduce((sum, card) => sum + Math.ceil(card.elapsedSeconds / 60), 0),
                 timePerformance: wasBurning ? "燃烧模式完成 1 张卡" : `比预计更稳地完成 ${completedCount} 张卡`,
                 createdAt: new Date().toISOString()
@@ -855,8 +1176,8 @@ export const useNextCardStore = create<NextCardStore>()(
               wasBurning ? `快速燃烧 ${actualMinutes} 分钟后完成` : `实际用时 ${actualMinutes} 分钟`
             ],
             lastDamageEffect: wasBurning ? "burn" : undefined,
-            lastAction: allDone ? `奖励卡生成：${currentCard.title}` : `完成：${currentCard.title}`,
-            nextSuggestion: allDone ? "查看 proof summary，并决定下一组 deck" : "进入下一张卡，保持单卡节奏",
+            lastAction: allDone ? `奖励卡生成:${currentCard.title}` : `完成:${currentCard.title}`,
+            nextSuggestion: allDone ? "查看 proof summary,并决定下一组 deck" : "进入下一张卡,保持单卡节奏",
             createdAt: new Date().toISOString()
           };
           const rewardProof: ProofRecord | null = rewardCard
@@ -874,7 +1195,7 @@ export const useNextCardStore = create<NextCardStore>()(
                 timeStatus: wasBurning ? "burning-completed" : "on-time",
                 timeDamageEvents: ["奖励卡生成", rewardCard.timePerformance],
                 lastAction: rewardCard.title,
-                nextSuggestion: "把结果写入 proof，稍后复盘最有效的小任务",
+                nextSuggestion: "把结果写入 proof,稍后复盘最有效的小任务",
                 createdAt: rewardCard.createdAt
               }
             : null;
@@ -905,7 +1226,7 @@ export const useNextCardStore = create<NextCardStore>()(
     }),
     {
       name: "next-card-mvp",
-      version: 2,
+      version: 3,
       migrate: (persistedState) => persistedState as PersistedNextCardState,
       merge: (persistedState, currentState) => {
         const persisted = persistedState as PersistedNextCardState;
@@ -924,7 +1245,15 @@ export const useNextCardStore = create<NextCardStore>()(
           deckPanelOpen: false,
           focusCardMode: true,
           activePlanCatalogId: undefined,
-          lastCompletion: undefined
+          lastCompletion: undefined,
+          messages: [],
+          isAiResponding: false,
+          aiFallback: false,
+          clarifyingQuestion: null,
+          clarificationAnswer: null,
+          turnCount: 0,
+          thinkingSteps: [],
+          revealedThinkingCount: 0
         };
       },
       partialize: (state) => ({
