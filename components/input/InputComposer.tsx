@@ -13,7 +13,6 @@ import {
   RefreshCcw,
   RotateCcw,
   Send,
-  Sparkles,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -106,8 +105,6 @@ export function InputComposer() {
           {showThinking && (
             <ChatPanel
               key="thinking"
-              title="AI 正在理解"
-              tagline="thinking"
               messages={messages}
               isAiResponding={isAiResponding}
               aiFallback={aiFallback}
@@ -134,8 +131,6 @@ export function InputComposer() {
           {showGenerating && (
             <GeneratingPanel
               key="generating"
-              answerLabel={clarificationAnswer?.label}
-              analysisTitle={analysis?.goalUnderstanding}
               messages={messages}
               isAiResponding={isAiResponding}
               onReset={resetInputDraft}
@@ -145,8 +140,6 @@ export function InputComposer() {
           {showPlans && (
             <PlanChoicePanel
               key="plans"
-              analysisTitle={analysis?.goalUnderstanding}
-              answerLabel={clarificationAnswer?.label}
               messages={messages}
               isAiResponding={isAiResponding}
               regenerateCount={plans.regenerateCount}
@@ -357,16 +350,12 @@ function WelcomePanel({ onExample }: { onExample: (text: string) => void }) {
 }
 
 function ChatPanel({
-  title,
-  tagline,
   messages,
   isAiResponding,
   aiFallback,
   onSend,
   onReset
 }: {
-  title: string;
-  tagline: string;
   messages: ChatMessage[];
   isAiResponding: boolean;
   aiFallback: boolean;
@@ -382,13 +371,8 @@ function ChatPanel({
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-fern">
-            <Sparkles size={14} />
-            {tagline}
-          </div>
-          <h1 className="mt-1 font-editorial text-[1.72rem] leading-tight text-ink">{title}</h1>
           {aiFallback && (
-            <p className="mt-2 text-[0.7rem] leading-4 text-ink/48">连不上 AI 服务,先按本地理解继续。</p>
+            <p className="text-[0.7rem] leading-4 text-ink/48">离线模式</p>
           )}
         </div>
         <button
@@ -403,7 +387,7 @@ function ChatPanel({
 
       <ChatStream messages={messages} isAiResponding={isAiResponding} />
 
-      <ChatInputBar onSend={onSend} disabled={isAiResponding} placeholder="再补一句,或直接说想要什么" />
+      <ChatInputBar onSend={onSend} disabled={isAiResponding} placeholder="" />
     </motion.div>
   );
 }
@@ -578,13 +562,8 @@ function ClarifyingPanel({
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-fern">
-            <Sparkles size={14} />
-            one question
-          </div>
-          <h1 className="mt-1 font-editorial text-[1.72rem] leading-tight text-ink">先理解，再出卡</h1>
           {aiFallback && (
-            <p className="mt-2 text-[0.7rem] leading-4 text-ink/48">连不上 AI 服务,先按本地理解继续。</p>
+            <p className="text-[0.7rem] leading-4 text-ink/48">离线模式</p>
           )}
         </div>
         <button
@@ -607,8 +586,7 @@ function ClarifyingPanel({
 
         {question && !isAiResponding && (
           <div className="mt-5 rounded-[1.35rem] border border-ink/10 bg-white/68 p-4 shadow-sm">
-            <div className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-fern">one question</div>
-            <h2 className="mt-2 text-base font-semibold leading-6 text-ink">{question.question}</h2>
+            <h2 className="text-base font-semibold leading-6 text-ink">{question.question}</h2>
             <div className="mt-4 grid gap-2">
               {question.options.map((option) => {
                 const selected = answerId === option.id;
@@ -638,31 +616,23 @@ function ClarifyingPanel({
               onClick={onDefault}
               className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-full bg-ink/8 text-xs font-semibold text-ink/72 hover:bg-ink/12"
             >
-              按默认理解直接生成方案
+              用默认
               <ArrowRight size={14} />
             </button>
           </div>
         )}
       </div>
 
-      <ChatInputBar
-        onSend={onSend}
-        disabled={isAiResponding}
-        placeholder="不想选就直接说,比如「时间紧,直接给方案」"
-      />
+      <ChatInputBar onSend={onSend} disabled={isAiResponding} placeholder="" />
     </motion.div>
   );
 }
 
 function GeneratingPanel({
-  answerLabel,
-  analysisTitle,
   messages,
   isAiResponding,
   onReset
 }: {
-  answerLabel?: string;
-  analysisTitle?: string;
   messages: ChatMessage[];
   isAiResponding: boolean;
   onReset: () => void;
@@ -675,17 +645,7 @@ function GeneratingPanel({
       className="flex h-full min-h-0 flex-col"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-fern">
-            <Sparkles size={14} />
-            generating
-          </div>
-          <h1 className="mt-1 font-editorial text-[1.72rem] leading-tight text-ink">正在生成三套方案</h1>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-ink/58">
-            {answerLabel ? `已按「${answerLabel}」理解。` : "已按当前理解生成方案。"}
-            {analysisTitle ? ` ${analysisTitle}` : ""}
-          </p>
-        </div>
+        <div className="min-w-0" />
         <button
           type="button"
           onClick={onReset}
@@ -700,7 +660,6 @@ function GeneratingPanel({
 
       <div className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-full border border-ink/10 bg-white/62 text-sm font-medium text-ink/64">
         <Loader2 size={16} className="animate-spin" />
-        正在生成方案…
       </div>
     </motion.div>
   );
@@ -754,8 +713,6 @@ function TypingBubble() {
 }
 
 function PlanChoicePanel({
-  analysisTitle,
-  answerLabel,
   messages,
   isAiResponding,
   regenerateCount,
@@ -763,8 +720,6 @@ function PlanChoicePanel({
   onSend,
   onReset
 }: {
-  analysisTitle?: string;
-  answerLabel?: string;
   messages: ChatMessage[];
   isAiResponding: boolean;
   regenerateCount: number;
@@ -783,14 +738,7 @@ function PlanChoicePanel({
       className="flex h-full min-h-0 flex-col"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-fern">choose plan</div>
-          <h1 className="mt-1 font-editorial text-[1.58rem] leading-tight text-ink">选择这次的执行节奏</h1>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-ink/58">
-            {answerLabel ? `已按「${answerLabel}」理解。` : "已按当前理解生成方案。"}
-            {analysisTitle ? ` ${analysisTitle}` : ""}
-          </p>
-        </div>
+        <div className="min-w-0" />
         <button
           type="button"
           onClick={onReset}
@@ -828,14 +776,10 @@ function PlanChoicePanel({
         className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-full border border-ink/12 bg-white/70 text-sm font-semibold text-ink transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
       >
         <RefreshCcw size={15} />
-        都不太对，让 AI 再换一组
+        换一组
       </button>
 
-      <ChatInputBar
-        onSend={onSend}
-        disabled={isAiResponding}
-        placeholder="想调整方向就直接说,比如「再低压一点」"
-      />
+      <ChatInputBar onSend={onSend} disabled={isAiResponding} placeholder="" />
     </motion.div>
   );
 }

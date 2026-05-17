@@ -28,11 +28,6 @@ type ChatRequestBody = {
 
 type ChatProvider = "mimo" | "deepseek" | "local";
 
-type DeepSeekMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
-
 const FALLBACK_PAYLOAD: AIReplyPayload = {
   reply: "AI 服务暂时不可用，先按本地默认理解继续。你也可以再补一句。",
   next_phase: "thinking",
@@ -59,31 +54,12 @@ export async function POST(request: NextRequest) {
     return jsonResponse({ error: "at least one user message is required" }, 400);
   }
 
-  const preferredProvider = getPreferredChatProvider();
-  const deepSeekAvailable = Boolean(process.env.DEEPSEEK_API_KEY);
+  // DeepSeek (Anthropic protocol) is the primary provider; endpoint, key,
+  // and model are hardcoded above. Local plan-mode is the fallback when
+  // DeepSeek is unreachable, errors, or returns empty content.
+  const deepSeekResult = await callDeepSeekChat(body);
+  if (deepSeekResult) return jsonResponse(deepSeekResult, 200);
 
-  // Provider order: explicit preference -> any configured provider -> local fallback.
-  const order: ChatProvider[] = preferredProvider === "deepseek"
-    ? ["deepseek", "mimo"]
-    : ["mimo", "deepseek"];
-
-  for (const provider of order) {
-    if (provider === "deepseek" && deepSeekAvailable) {
-      const result = await callDeepSeekChat(body);
-      if (result) return jsonResponse(result, 200);
-    }
-    if (provider === "mimo") {
-      // callPlanModeChat always returns (local fallback is built-in).
-      // Only emit it when the caller actually prefers mimo, OR DeepSeek is unavailable.
-      const shouldEmitPlanMode = preferredProvider === "mimo" || !deepSeekAvailable;
-      if (shouldEmitPlanMode) {
-        const result = await callPlanModeChat(body, latestUserText);
-        if (result) return jsonResponse(result, 200);
-      }
-    }
-  }
-
-  // Last-resort fallback: never leave the client without a structured payload.
   const lastResort = await callPlanModeChat(body, latestUserText);
   if (lastResort) return jsonResponse(lastResort, 200);
 
@@ -114,54 +90,97 @@ async function callPlanModeChat(body: ChatRequestBody, latestUserText: string) {
   };
 }
 
-async function callDeepSeekChat(body: ChatRequestBody) {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
+// Endpoint, key, and model are intentionally hardcoded per project owner's
+// instruction. The endpoint is DeepSeek's Anthropic-compatible Messages API
+// (NOT the OpenAI-compatible /chat/completions). This means: x-api-key auth,
+// anthropic-version header, content array with thinking + text blocks, and
+// max_tokens lives at the top level of the request body.
+const DEEPSEEK_ANTHROPIC_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
+const DEEPSEEK_API_KEY_HARDCODED = "***REMOVED***";
+const DEEPSEEK_MODEL_HARDCODED = "deepseek-v4-pro";
 
-  const baseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
-  const model = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+async function callDeepSeekChat(body: ChatRequestBody) {
+  // Reasoning-class models (deepseek-v4-pro) spend a large slice of tokens on
+  // hidden thinking blocks before emitting the JSON payload. 1600 leaves
+  // nothing for actual output. The Next Card system prompt is long enough
+  // that we have observed thinking go past 8k tokens — keep the budget high.
+  const maxTokens = 16000;
 
   try {
-    const response = await fetch(`${trimTrailingSlash(baseUrl)}/chat/completions`, {
+    const response = await fetch(DEEPSEEK_ANTHROPIC_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
+        "x-api-key": DEEPSEEK_API_KEY_HARDCODED,
+        "anthropic-version": "2023-06-01"
       },
-      body: JSON.stringify({
-        model,
-        messages: toDeepSeekMessages(body.messages, body.contextNote),
-        response_format: { type: "json_object" },
-        temperature: 0.35,
-        max_tokens: 1600
-      })
+      body: JSON.stringify(buildAnthropicRequest(body, DEEPSEEK_MODEL_HARDCODED, maxTokens))
     });
 
     if (!response.ok) {
+      console.error("[chat] deepseek non-OK:", response.status, await response.text().catch(() => ""));
       return null;
     }
 
     const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      content?: Array<{ type?: string; text?: string }>;
+      stop_reason?: string;
     };
-    const content = data.choices?.[0]?.message?.content ?? "";
+    const text =
+      data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
+    if (!text) {
+      console.error("[chat] deepseek empty text, stop_reason=", data.stop_reason);
+      return null;
+    }
 
     return {
-      payload: normalizeAiReplyPayload(parsePayload(content), {
+      payload: normalizeAiReplyPayload(parsePayload(text), {
         inputText: getLatestUserText(body.messages) || "当前目标",
         sourceType: body.sourceType ?? "text",
         parsedText: [body.parsedText, body.contextNote].filter(Boolean).join("\n"),
         regenerate: body.regenerate === true,
-        previousPlans: Array.isArray(body.previousPlans) ? body.previousPlans : []
+        previousPlans: Array.isArray(body.previousPlans) ? body.previousPlans : [],
+        userTurnCount: countUserTurns(body.messages)
       }),
       fallback: false,
       provider: "deepseek" as const
     };
-  } catch {
+  } catch (err) {
+    console.error("[chat] deepseek threw:", err);
     return null;
   }
+}
+
+// Anthropic Messages API: system prompt is a top-level `system` field (not a
+// message), and only user/assistant alternation is allowed in `messages`.
+// The Next Card system prompt asks for a strict JSON object as the reply —
+// the model honors that without needing OpenAI's response_format flag.
+function buildAnthropicRequest(
+  body: ChatRequestBody,
+  model: string,
+  maxTokens: number
+) {
+  const systemParts = [NEXT_CARD_SYSTEM_PROMPT];
+  if (body.contextNote?.trim()) {
+    systemParts.push(body.contextNote.trim());
+  }
+
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const message of body.messages) {
+    if (!message.text.trim()) continue;
+    messages.push({
+      role: message.role === "user" ? "user" : "assistant",
+      content: message.text
+    });
+  }
+
+  return {
+    model,
+    max_tokens: maxTokens,
+    system: systemParts.join("\n\n"),
+    messages,
+    temperature: 0.35
+  };
 }
 
 function planModeToAiReplyPayload(
@@ -180,12 +199,7 @@ function planModeToAiReplyPayload(
       : null;
 
   return {
-    reply:
-      result.status === "ready-to-build"
-        ? "OK，我直接给你三套方案。"
-        : missing.length > 0
-          ? `还差 ${missing.slice(0, 2).join("、")}。你也可以先按默认建牌。`
-          : "这次适合先检阅一下，再发第一张牌。",
+    reply: buildLocalReply(result, input.inputText, nextPhase),
     next_phase: nextPhase,
     question: nextPhase === "asking" ? buildQuestion(result) : null,
     plans,
@@ -272,27 +286,66 @@ function buildQuestion(result: PlanModeTurnResult): ClarifyingQuestion {
 
 function normalizeAiReplyPayload(
   parsed: Partial<AIReplyPayload>,
-  input: { inputText: string; sourceType: SourceType; parsedText: string; regenerate?: boolean; previousPlans?: PlanOption[] }
+  input: {
+    inputText: string;
+    sourceType: SourceType;
+    parsedText: string;
+    regenerate?: boolean;
+    previousPlans?: PlanOption[];
+    userTurnCount?: number;
+  }
 ): AIReplyPayload {
-  const plans = Array.isArray(parsed.plans)
-    ? mergeProviderPlans(
-        input,
-        parsed.plans.slice(0, 3).map((plan) => ({
-          label: plan.name,
-          description: plan.summary,
-          planId: plan.id
-        })),
-        input.regenerate ? input.previousPlans : undefined
-      )
-    : null;
+  const requestedPhase = normalizePhase(parsed.next_phase);
+
+  // Validate the model-attached clarifying question. We require at least
+  // one option for the panel to render meaningfully.
+  const hasValidQuestion =
+    parsed.question &&
+    Array.isArray(parsed.question.options) &&
+    parsed.question.options.length > 0;
+
+  // First-turn guarantee: never let the model skip straight to `ready` on
+  // the user's very first message. If it tries, demote — to `asking` when
+  // it actually has a question to ask, otherwise `thinking` so the user
+  // gets a verbal probe instead of an empty options panel.
+  const isFirstTurn = !input.regenerate && (input.userTurnCount ?? 0) <= 1;
+  const blockReady = isFirstTurn && requestedPhase === "ready";
+
+  // `asking` without a question is a shape mismatch — render chat-only.
+  const askingDemotedToThinking = requestedPhase === "asking" && !hasValidQuestion;
+
+  const nextPhase: AIReplyPayload["next_phase"] = blockReady
+    ? hasValidQuestion
+      ? "asking"
+      : "thinking"
+    : askingDemotedToThinking
+      ? "thinking"
+      : requestedPhase;
+
+  const plans =
+    nextPhase === "ready" && Array.isArray(parsed.plans)
+      ? mergeProviderPlans(
+          input,
+          parsed.plans.slice(0, 3).map((plan) => ({
+            label: plan.name,
+            description: plan.summary,
+            planId: plan.id
+          })),
+          input.regenerate ? input.previousPlans : undefined
+        )
+      : null;
 
   return {
     reply: typeof parsed.reply === "string" && parsed.reply.trim() ? parsed.reply.trim() : FALLBACK_PAYLOAD.reply,
-    next_phase: normalizePhase(parsed.next_phase),
-    question: parsed.question ?? null,
+    next_phase: nextPhase,
+    question: nextPhase === "asking" ? (parsed.question ?? null) : null,
     plans,
     analysis_patch: parsed.analysis_patch ?? null
   };
+}
+
+function countUserTurns(messages: ChatMessage[]): number {
+  return messages.filter((m) => m.role === "user" && m.text.trim()).length;
 }
 
 function toPlanModeMessages(messages: ChatMessage[]): PlanModeMessage[] {
@@ -301,27 +354,6 @@ function toPlanModeMessages(messages: ChatMessage[]): PlanModeMessage[] {
     content: message.text,
     createdAt: message.createdAt
   }));
-}
-
-function toDeepSeekMessages(messages: ChatMessage[], contextNote?: string): DeepSeekMessage[] {
-  const out: DeepSeekMessage[] = [{ role: "system", content: NEXT_CARD_SYSTEM_PROMPT }];
-
-  if (contextNote?.trim()) {
-    out.push({ role: "system", content: contextNote.trim() });
-  }
-
-  for (const message of messages) {
-    if (!message.text.trim()) {
-      continue;
-    }
-
-    out.push({
-      role: message.role === "user" ? "user" : "assistant",
-      content: message.text
-    });
-  }
-
-  return out;
 }
 
 function parsePayload(content: string): Partial<AIReplyPayload> {
@@ -352,12 +384,6 @@ function getLatestUserText(messages: ChatMessage[]) {
     ?.text.trim();
 }
 
-function getPreferredChatProvider(): ChatProvider {
-  const raw = process.env.NEXT_CARD_CHAT_PROVIDER?.trim().toLowerCase();
-
-  return raw === "deepseek" ? "deepseek" : "mimo";
-}
-
 function normalizePhase(value: unknown): AIReplyPayload["next_phase"] {
   return value === "thinking" || value === "asking" || value === "generating" || value === "ready"
     ? value
@@ -376,8 +402,51 @@ function dealModeCopy(mode: PlanModeTurnResult["analysis"]["recommendedDealMode"
   return "先发第一张行动牌";
 }
 
-function trimTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
+// Local fallback reply generator. The point is NOT to fake a smart model —
+// it is to produce a sentence that quotes something specific from the user's
+// own input ("今晚 20:00 / 一页 / 课程分析" → "20:00 还有多久？一页是要写多深？")
+// so the user does not see a templated phrase like "选个方向". When DeepSeek
+// is configured this path is rarely hit; when it is, at least the reply
+// references the actual goal instead of a stock string.
+function buildLocalReply(
+  result: PlanModeTurnResult,
+  inputText: string,
+  nextPhase: AIReplyPayload["next_phase"]
+): string {
+  if (nextPhase === "ready") {
+    return "";
+  }
+
+  const text = inputText.trim();
+  if (!text) {
+    return "";
+  }
+
+  const time = text.match(/\d{1,2}[:：]\d{2}|今晚|今天|明天|早八|课前|周[一二三四五六日天]/);
+  const quantity = text.match(/[一二三四五六七八九十两\d]+\s*(页|节|题|道|篇|份|分钟|小时|公里|本|章|个|条)/);
+  const verb = text.match(/(交|提交|完成|写|做|去|赶|背|看|读|听|练|改|复习|准备|出门|到课|考试)/);
+  const subject = text.match(/(高数|英语|物理|化学|生物|历史|政治|语文|课程|课表|教材|论文|报告|作业|分析|总结|笔记|题目|材料)/);
+
+  const probes: string[] = [];
+  if (time && quantity && verb) {
+    probes.push(`离 ${time[0]} 还有多久？${quantity[0]}打算${verb[0]}多深？`);
+  } else if (time && verb) {
+    probes.push(`离 ${time[0]} 还剩多少？${verb[0]}到什么程度算 OK？`);
+  } else if (time) {
+    probes.push(`离 ${time[0]} 还多久？这之前必须做完哪一块？`);
+  } else if (quantity && verb && subject) {
+    probes.push(`${quantity[0]}${subject[0]}——${verb[0]}成什么样算交得了？`);
+  } else if (subject && verb) {
+    probes.push(`${subject[0]}你${verb[0]}过没有？现在卡在哪一步？`);
+  } else if (subject) {
+    probes.push(`${subject[0]}这事，你现在最想先解决哪个？`);
+  } else if (verb) {
+    probes.push(`${verb[0]}什么？要做到什么程度？`);
+  } else {
+    probes.push(`「${text.slice(0, 16)}」这事，你现在最卡在哪？`);
+  }
+
+  return probes[0];
 }
 
 function jsonResponse(data: unknown, status: number) {

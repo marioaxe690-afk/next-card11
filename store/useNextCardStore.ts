@@ -656,12 +656,12 @@ function enforceTurnBudget(
     return {
       ...payload,
       next_phase: "ready",
-      reply: payload.next_phase === "ready" ? payload.reply : "OK,我直接给你三套方案,不对再说。"
+      reply: payload.next_phase === "ready" ? payload.reply : ""
     };
   }
 
   if (remaining <= 1 && (payload.next_phase === "thinking" || payload.next_phase === "asking")) {
-    return { ...payload, next_phase: "ready", reply: "够清楚了,直接看下面三个方案。" };
+    return { ...payload, next_phase: "ready", reply: "" };
   }
 
   if (used >= 3 && payload.next_phase === "thinking") {
@@ -670,7 +670,7 @@ function enforceTurnBudget(
 
   if (detectRepetitiveQuestion(messages, payload.reply)) {
     if (payload.next_phase === "thinking" || payload.next_phase === "asking") {
-      return { ...payload, next_phase: "ready", reply: "我刚才已经问过类似的——直接给你方案,不对再调。" };
+      return { ...payload, next_phase: "ready", reply: "" };
     }
   }
 
@@ -693,18 +693,21 @@ async function requestAiTurn(get: StoreGet, set: StoreSet, opts?: { regenerate?:
     const payload = enforceTurnBudget(rawPayload, state.turnCount, state.messages);
 
     set((current) => {
-      const aiMessage: ChatMessage = {
-        id: makeMessageId(),
-        role: "ai",
-        text: payload.reply,
-        tone:
-          payload.next_phase === "asking"
-            ? "uncertainty"
-            : payload.next_phase === "generating" || payload.next_phase === "ready"
-              ? "confirmation"
-              : "understanding",
-        createdAt: new Date().toISOString()
-      };
+      const replyText = payload.reply.trim();
+      const aiMessage: ChatMessage | null = replyText
+        ? {
+            id: makeMessageId(),
+            role: "ai",
+            text: replyText,
+            tone:
+              payload.next_phase === "asking"
+                ? "uncertainty"
+                : payload.next_phase === "generating" || payload.next_phase === "ready"
+                  ? "confirmation"
+                  : "understanding",
+            createdAt: new Date().toISOString()
+          }
+        : null;
 
       const baselineAnalysis = current.analysis ?? mockAnalyzeInput(current.inputs);
       const nextAnalysis = applyAnalysisPatch(current.analysis, baselineAnalysis, payload.analysis_patch);
@@ -730,7 +733,7 @@ async function requestAiTurn(get: StoreGet, set: StoreSet, opts?: { regenerate?:
         analysisStatus: nextStatus,
         isAiResponding: false,
         aiFallback: fallback,
-        messages: [...current.messages, aiMessage],
+        messages: aiMessage ? [...current.messages, aiMessage] : current.messages,
         clarifyingQuestion: validatedQuestion ?? null,
         turnCount: current.turnCount + 1,
         plans: {
@@ -748,17 +751,7 @@ async function requestAiTurn(get: StoreGet, set: StoreSet, opts?: { regenerate?:
     set((current) => ({
       ...current,
       isAiResponding: false,
-      aiFallback: true,
-      messages: [
-        ...current.messages,
-        {
-          id: makeMessageId(),
-          role: "ai",
-          text: "(连不上 AI 服务,再说一句或重试。)",
-          tone: "uncertainty",
-          createdAt: new Date().toISOString()
-        }
-      ]
+      aiFallback: true
     }));
   }
 }
@@ -1029,18 +1022,10 @@ export const useNextCardStore = create<NextCardStore>()(
           return;
         }
 
-        const userMessage: ChatMessage = {
-          id: makeMessageId(),
-          role: "user",
-          text: `我选「${answer.label}」。`,
-          createdAt: new Date().toISOString()
-        };
-
         set({
           analysisStatus: "generating",
           clarifyingQuestion: question,
           clarificationAnswer: answer,
-          messages: [...state.messages, userMessage],
           isAiResponding: true,
           aiFallback: false,
           plans: {
@@ -1063,18 +1048,10 @@ export const useNextCardStore = create<NextCardStore>()(
           return;
         }
 
-        const userMessage: ChatMessage = {
-          id: makeMessageId(),
-          role: "user",
-          text: `按默认理解(${answer.label})直接给方案。`,
-          createdAt: new Date().toISOString()
-        };
-
         set({
           analysisStatus: "generating",
           clarifyingQuestion: question,
           clarificationAnswer: answer,
-          messages: [...state.messages, userMessage],
           isAiResponding: true,
           aiFallback: false,
           plans: {
@@ -1110,13 +1087,6 @@ export const useNextCardStore = create<NextCardStore>()(
           return;
         }
 
-        const userMessage: ChatMessage = {
-          id: makeMessageId(),
-          role: "user",
-          text: "这三个方案不太对,再换一组。",
-          createdAt: new Date().toISOString()
-        };
-
         // Snapshot the current plans so the backend can use them as the
         // "previous plans" seed when truly regenerating, instead of
         // returning the same three options. We clear the visible options
@@ -1127,7 +1097,6 @@ export const useNextCardStore = create<NextCardStore>()(
 
         set({
           analysisStatus: "generating",
-          messages: [...state.messages, userMessage],
           isAiResponding: true,
           aiFallback: false,
           plans: {
