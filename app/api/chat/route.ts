@@ -54,11 +54,16 @@ export async function POST(request: NextRequest) {
     return jsonResponse({ error: "at least one user message is required" }, 400);
   }
 
-  // DeepSeek (Anthropic protocol) is the primary provider; endpoint, key,
-  // and model are hardcoded above. Local plan-mode is the fallback when
-  // DeepSeek is unreachable, errors, or returns empty content.
+  // Provider cascade (insurance flow): try DeepSeek first, then Mimo as a
+  // hot backup if DeepSeek is unreachable / returns empty / throws, then
+  // local plan-mode as the last-resort fallback that always returns
+  // something. Each remote layer has its own one-shot retry + error log so
+  // a single flake never collapses the cascade.
   const deepSeekResult = await callDeepSeekChat(body);
   if (deepSeekResult) return jsonResponse(deepSeekResult, 200);
+
+  const mimoResult = await callMimoChat(body);
+  if (mimoResult) return jsonResponse(mimoResult, 200);
 
   const lastResort = await callPlanModeChat(body, latestUserText);
   if (lastResort) return jsonResponse(lastResort, 200);
@@ -220,6 +225,112 @@ function buildAnthropicRequest(
     messages,
     temperature: 0.35
   };
+}
+
+// Mimo provider — OpenAI-compatible Chat Completions protocol. This is the
+// hot backup that fires when DeepSeek is unreachable, throws, or returns
+// empty content twice in a row. Endpoint / key / model are hardcoded below;
+// fill in the latest values when handing them off here.
+//
+// TODO: hardcode real key + latest model name. Until then this layer is a
+// no-op (returns null fast) so the cascade falls through to local without
+// burning a request.
+const MIMO_OPENAI_ENDPOINT = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions";
+const MIMO_API_KEY_HARDCODED = "";
+const MIMO_MODEL_HARDCODED = "mimo-v2.5-pro";
+
+async function callMimoChat(body: ChatRequestBody): Promise<{
+  payload: AIReplyPayload;
+  fallback: boolean;
+  provider: ChatProvider;
+} | null> {
+  if (!MIMO_API_KEY_HARDCODED) {
+    return null;
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const text = await invokeMimoOnce(body, attempt);
+    if (text === null) return null; // hard error
+    if (text) {
+      return {
+        payload: normalizeAiReplyPayload(parsePayload(text), {
+          inputText: getLatestUserText(body.messages) || "当前目标",
+          sourceType: body.sourceType ?? "text",
+          parsedText: [body.parsedText, body.contextNote].filter(Boolean).join("\n"),
+          regenerate: body.regenerate === true,
+          previousPlans: Array.isArray(body.previousPlans) ? body.previousPlans : [],
+          userTurnCount: countUserTurns(body.messages)
+        }),
+        fallback: false,
+        provider: "mimo" as const
+      };
+    }
+  }
+
+  return null;
+}
+
+async function invokeMimoOnce(body: ChatRequestBody, attempt: number): Promise<string | null | ""> {
+  try {
+    const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: NEXT_CARD_SYSTEM_PROMPT }
+    ];
+    if (body.contextNote?.trim()) {
+      messages.push({ role: "system", content: body.contextNote.trim() });
+    }
+    for (const message of body.messages) {
+      if (!message.text.trim()) continue;
+      messages.push({
+        role: message.role === "user" ? "user" : "assistant",
+        content: message.text
+      });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+
+    let response: Response;
+    try {
+      response = await fetch(MIMO_OPENAI_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${MIMO_API_KEY_HARDCODED}`
+        },
+        body: JSON.stringify({
+          model: MIMO_MODEL_HARDCODED,
+          messages,
+          response_format: { type: "json_object" },
+          temperature: 0.35,
+          max_tokens: 4000
+        }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      console.error("[chat] mimo non-OK:", response.status, await response.text().catch(() => ""));
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+    };
+    const content = data.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!content) {
+      console.error(
+        `[chat] mimo empty content (attempt ${attempt + 1}/2), finish_reason=`,
+        data.choices?.[0]?.finish_reason
+      );
+      return "";
+    }
+    return content;
+  } catch (err) {
+    console.error("[chat] mimo threw:", err);
+    return null;
+  }
 }
 
 function planModeToAiReplyPayload(
