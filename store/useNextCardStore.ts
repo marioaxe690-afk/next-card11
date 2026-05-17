@@ -151,7 +151,7 @@ function makeDocumentAttachment(file: File): UploadedAttachment {
     id: `document-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
     name: file.name || "未命名文档",
     kind: "document",
-    mockedText: `已添加文档:${file.name || "未命名文档"}。稍后可接入真实解析,现在先按文档目标生成行动卡。`,
+    mockedText: `正在解析文档「${file.name || "未命名文档"}」…`,
     size: file.size,
     mimeType: file.type || undefined
   };
@@ -161,10 +161,82 @@ function makeImageUpload(file: File): UploadedImage {
   return {
     id: `image-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
     name: file.name || "已添加图片",
-    parsedTimetable: `已添加图片:${file.name || "图片"}。稍后可接入图库 OCR,现在先按图片内容生成行动卡。`,
+    parsedTimetable: `正在解析图片「${file.name || "图片"}」…`,
     size: file.size,
     mimeType: file.type || undefined
   };
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => resolve("");
+    reader.readAsText(file);
+  });
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      resolve(result);
+    };
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(file);
+  });
+}
+
+type ImportReviewResponse = {
+  reviewRequired?: boolean;
+  topLevelCards?: Array<{ id: string; title: string; sourceLine?: string; timeLabel?: string; kind?: string }>;
+  dealNowCards?: Array<{ id: string; title: string; sourceLine?: string }>;
+  hiddenBacklogCards?: Array<{ id: string; title: string; sourceLine?: string }>;
+  userReviewPrompt?: string;
+  error?: string;
+};
+
+function summarizeImportReview(result: ImportReviewResponse, fallbackName: string) {
+  if (!result || result.error) {
+    return `（${fallbackName} 解析未完成${result?.error ? `：${result.error}` : ""}，先按文字目标继续。）`;
+  }
+
+  const lines: string[] = [];
+  if (result.userReviewPrompt) lines.push(result.userReviewPrompt);
+
+  const top = result.topLevelCards ?? [];
+  if (top.length > 0) {
+    lines.push(`识别到 ${top.length} 项：`);
+    top.slice(0, 8).forEach((card) => {
+      const time = card.timeLabel ? `[${card.timeLabel}] ` : "";
+      lines.push(`- ${time}${card.title}`);
+    });
+    if (top.length > 8) lines.push(`…还有 ${top.length - 8} 项`);
+  }
+
+  if ((result.dealNowCards ?? []).length > 0) {
+    lines.push(`先发：${result.dealNowCards!.map((c) => c.title).join("、")}`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : `（${fallbackName} 已加入，但后端没识别到明确条目。）`;
+}
+
+async function callImportReview(payload: Record<string, unknown>): Promise<ImportReviewResponse | null> {
+  try {
+    const res = await fetch("/api/backend/import/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const json = (await res.json().catch(() => null)) as ImportReviewResponse | null;
+    if (!res.ok) {
+      return { error: json?.error ?? `import/review failed: ${res.status}` };
+    }
+    return json;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "网络异常" };
+  }
 }
 
 function getParsedText(inputs: Pick<InputsState, "attachments" | "imageSchedule">) {
@@ -463,7 +535,11 @@ async function requestAiTurn(get: StoreGet, set: StoreSet): Promise<void> {
   const contextNote = buildContextNote(state.inputs, turnBudget);
 
   try {
-    const { payload: rawPayload, fallback } = await callChatApi(state.messages, contextNote);
+    const { payload: rawPayload, fallback } = await callChatApi(state.messages, {
+      contextNote,
+      sourceType: state.inputs.sourceType,
+      parsedText: state.inputs.parsedText
+    });
     const payload = enforceTurnBudget(rawPayload, state.turnCount, state.messages);
 
     set((current) => {
@@ -635,24 +711,48 @@ export const useNextCardStore = create<NextCardStore>()(
             }
           };
         }),
-      addImageUpload: (file) =>
-        set((state) => {
-          const imageSchedule = makeImageUpload(file);
+      addImageUpload: (file) => {
+        const imageSchedule = makeImageUpload(file);
 
-          return {
-            inputs: {
-              ...state.inputs,
-              imageSchedule,
-              parsedText: getParsedText({ attachments: state.inputs.attachments, imageSchedule }),
-              sourceType: getSourceType({ ...state.inputs, imageSchedule })
+        set((state) => ({
+          inputs: {
+            ...state.inputs,
+            imageSchedule,
+            parsedText: getParsedText({ attachments: state.inputs.attachments, imageSchedule }),
+            sourceType: getSourceType({ ...state.inputs, imageSchedule })
+          }
+        }));
+
+        void (async () => {
+          const dataUrl = await readFileAsBase64(file);
+          if (!dataUrl) return;
+          const result = await callImportReview({
+            sourceType: "image",
+            attachmentName: file.name,
+            imageDataUrl: dataUrl,
+            imageMimeType: file.type || "image/jpeg"
+          });
+          const summary = summarizeImportReview(result ?? { error: "无响应" }, file.name || "图片");
+          set((state) => {
+            if (state.inputs.imageSchedule?.id !== imageSchedule.id) {
+              return state;
             }
-          };
-        }),
-      addDocumentUpload: (file) =>
-        set((state) => {
-          const attachment = makeDocumentAttachment(file);
-          const attachments = [...state.inputs.attachments, attachment];
+            const updated: UploadedImage = { ...state.inputs.imageSchedule, parsedTimetable: summary };
+            return {
+              inputs: {
+                ...state.inputs,
+                imageSchedule: updated,
+                parsedText: getParsedText({ attachments: state.inputs.attachments, imageSchedule: updated })
+              }
+            };
+          });
+        })();
+      },
+      addDocumentUpload: (file) => {
+        const attachment = makeDocumentAttachment(file);
 
+        set((state) => {
+          const attachments = [...state.inputs.attachments, attachment];
           return {
             inputs: {
               ...state.inputs,
@@ -661,7 +761,47 @@ export const useNextCardStore = create<NextCardStore>()(
               sourceType: getSourceType({ ...state.inputs, attachments })
             }
           };
-        }),
+        });
+
+        void (async () => {
+          const text = await readFileAsText(file);
+          const trimmed = text.trim();
+          if (!trimmed) {
+            set((state) => {
+              const attachments = state.inputs.attachments.map((a) =>
+                a.id === attachment.id ? { ...a, mockedText: `（${file.name || "文档"} 未读取到文本，请补充文字描述。）` } : a
+              );
+              return {
+                inputs: {
+                  ...state.inputs,
+                  attachments,
+                  parsedText: getParsedText({ attachments, imageSchedule: state.inputs.imageSchedule })
+                }
+              };
+            });
+            return;
+          }
+
+          const result = await callImportReview({
+            sourceType: "attachment",
+            attachmentName: file.name,
+            rawText: trimmed.slice(0, 8000)
+          });
+          const summary = summarizeImportReview(result ?? { error: "无响应" }, file.name || "文档");
+          set((state) => {
+            const attachments = state.inputs.attachments.map((a) =>
+              a.id === attachment.id ? { ...a, mockedText: summary } : a
+            );
+            return {
+              inputs: {
+                ...state.inputs,
+                attachments,
+                parsedText: getParsedText({ attachments, imageSchedule: state.inputs.imageSchedule })
+              }
+            };
+          });
+        })();
+      },
       removeInputAttachment: (id) =>
         set((state) => {
           const attachments = state.inputs.attachments.filter((attachment) => attachment.id !== id);

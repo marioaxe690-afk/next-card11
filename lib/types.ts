@@ -2,15 +2,55 @@ export type SourceType = "text" | "attachment" | "image" | "mixed";
 export type UrgencyStage = "calm" | "warm" | "hot" | "burning" | "expired";
 export type DamageEffect = "none" | "burn" | "freeze" | "crack" | "weathering";
 export type AnalysisStatus = "idle" | "thinking" | "asking" | "generating" | "ready";
+export type ChatRole = "user" | "ai";
+export type AIPhase = "thinking" | "asking" | "generating" | "ready";
+export type AgentId =
+  | "balanced-coach"
+  | "deadline-guardian"
+  | "micro-splitter"
+  | "sprint-driver"
+  | "gentle-recovery"
+  | "meaning-coach";
+
+export type BehaviorVector = {
+  expectancy: number;
+  taskValue: number;
+  procrastination: number;
+  timePressure: number;
+  reasons: string[];
+};
+
+export type AgentPolicy = {
+  strictness: number;
+  decomposition: number;
+  pushFrequency: number;
+  burnSensitivity: number;
+  freezeTolerance: number;
+  rewardEmphasis: number;
+  cardMinuteRange: [number, number];
+  tone: "gentle" | "balanced" | "direct" | "urgent";
+};
+
+export type AgentProfile = {
+  id: AgentId;
+  name: string;
+  role: string;
+  description: string;
+  policy: AgentPolicy;
+};
+
+export type AgentDecision = {
+  selectedAgentId: AgentId;
+  confidence: number;
+  reason: string;
+};
 
 export type ThinkingStep = {
   id: string;
-  role: "user" | "ai";
+  role: ChatRole;
   text: string;
   tone?: "understanding" | "time" | "uncertainty" | "confirmation";
 };
-
-export type ChatRole = "user" | "ai";
 
 export type ChatMessage = {
   id: string;
@@ -19,16 +59,6 @@ export type ChatMessage = {
   tone?: "understanding" | "time" | "uncertainty" | "confirmation" | "reply";
   pending?: boolean;
   createdAt: string;
-};
-
-export type AIPhase = "thinking" | "asking" | "generating" | "ready";
-
-export type AIReplyPayload = {
-  reply: string;
-  next_phase: AIPhase;
-  question?: ClarifyingQuestion | null;
-  plans?: PlanOption[] | null;
-  analysis_patch?: Partial<AnalysisResult> | null;
 };
 
 export type ClarificationOption = {
@@ -85,6 +115,8 @@ export type AnalysisResult = {
   deadlineLabel: string;
   availableWindow: string;
   suggestedStart: string;
+  behaviorVector: BehaviorVector;
+  agentDecision: AgentDecision;
 };
 
 export type PlanOption = {
@@ -95,6 +127,17 @@ export type PlanOption = {
   estimatedTime: string;
   detailLevel: "high" | "medium" | "low";
   steps: string[];
+  agentId: AgentId;
+  agentName: string;
+  agentPolicy: AgentPolicy;
+};
+
+export type AIReplyPayload = {
+  reply: string;
+  next_phase: AIPhase;
+  question?: ClarifyingQuestion | null;
+  plans?: PlanOption[] | null;
+  analysis_patch?: Partial<AnalysisResult> | null;
 };
 
 export type PlansState = {
@@ -126,6 +169,8 @@ export type TaskDeck = {
   id: string;
   coverTitle: string;
   coverIcon: string;
+  agentId: AgentId;
+  agentName: string;
   deckStatus: "new" | "active" | "frozen" | "failed" | "completed" | "needs-review";
   cards: TaskCard[];
   totalCards: number;
@@ -135,6 +180,8 @@ export type TaskDeck = {
 export type TaskCard = {
   id: string;
   deckId: string;
+  agentId: AgentId;
+  agentName: string;
   flowNodeId: string;
   title: string;
   action: string;
@@ -180,6 +227,9 @@ export type ProofRecord = {
   cardId?: string;
   goalTitle: string;
   source: SourceType;
+  agentId?: AgentId;
+  agentName?: string;
+  behaviorSnapshot?: BehaviorVector;
   status: "completed" | "in-progress" | "frozen" | "failed" | "rewarded" | "needs-review";
   progress: number;
   completedCards: number;
@@ -227,3 +277,235 @@ export type ActiveOverlay = {
 } | null;
 
 export type Mode = "input" | "deck" | "proof";
+
+export type TimeLockStrength = "hard" | "soft" | "advisory";
+
+export type TimeLockKind =
+  | "notebook-fixed"
+  | "user-fixed"
+  | "deadline"
+  | "calendar-busy"
+  | "reminder-fixed";
+
+export type QueueTargetType = "card" | "deck" | "event" | "hidden-goal" | "reminder" | "calendar-event";
+
+export type TimeLock = {
+  id: string;
+  targetId: string;
+  targetType: QueueTargetType;
+  kind: TimeLockKind;
+  strength: TimeLockStrength;
+  startsAt?: string;
+  endsAt?: string;
+  lockedAt: string;
+  reason: string;
+  canAgentMove: boolean;
+  canAgentSuggest: boolean;
+};
+
+export type QueueItemKind = "card" | "deck" | "event" | "hidden-goal" | "reminder" | "calendar-event";
+
+export type QueueItemStatus =
+  | "queued"
+  | "active"
+  | "frozen"
+  | "hidden"
+  | "completed"
+  | "needs-review";
+
+export type QueueSyncState = "none" | "wanted" | "synced" | "failed";
+
+export type QueueItem = {
+  id: string;
+  title: string;
+  kind: QueueItemKind;
+  status: QueueItemStatus;
+  source: SourceType;
+  createdAt: string;
+  estimatedMinutes: number;
+  deadlineAt?: string | null;
+  suggestedStartAt?: string | null;
+  urgencyStage: UrgencyStage;
+  position?: number;
+  deckId?: string;
+  cardId?: string;
+  hidden?: boolean;
+  calendarSync?: QueueSyncState;
+  reminderSync?: QueueSyncState;
+  frozenAt?: string | null;
+  returnAfter?: string | null;
+  behaviorVector?: BehaviorVector;
+  timeLocks: TimeLock[];
+};
+
+export type PriorityVector = {
+  urgency: number;
+  importance: number;
+  deadlineRisk: number;
+  effort: number;
+  confidence: number;
+  timePressure: number;
+  procrastinationRisk: number;
+  freezeAge: number;
+  contextCost: number;
+  userLockPenalty: number;
+  score: number;
+  reasons: string[];
+};
+
+export type QueueActionKind =
+  | "insert-task"
+  | "move-task"
+  | "deal-card"
+  | "reveal-hidden-goal"
+  | "create-reminder"
+  | "update-reminder"
+  | "create-calendar-event"
+  | "update-calendar-event"
+  | "suggest-time-change"
+  | "return-frozen-card"
+  | "split-frozen-card"
+  | "keep-waiting"
+  | "no-op";
+
+export type QueueAction = {
+  id: string;
+  kind: QueueActionKind;
+  targetId: string;
+  title: string;
+  priority: number;
+  position?: number;
+  scheduledFor?: string;
+  payload?: Record<string, unknown>;
+  reason: string;
+  confidence: number;
+  requiresUserReview: boolean;
+  respectsLocks: boolean;
+  createdAt: string;
+};
+
+export type LockedConflict = {
+  targetId: string;
+  lockId: string;
+  kind: TimeLockKind;
+  reason: string;
+  suggestedAction: "keep-fixed" | "ask-user" | "suggest-only";
+};
+
+export type SchedulePlannerInput = {
+  now: string;
+  items: QueueItem[];
+  activeQueue: string[];
+  timeLocks: TimeLock[];
+  maxDealCards?: 1 | 2;
+};
+
+export type SchedulePlannerOutput = {
+  generatedAt: string;
+  priorityVectors: Record<string, PriorityVector>;
+  orderedQueue: string[];
+  actions: QueueAction[];
+  lockedConflicts: LockedConflict[];
+};
+
+export type FrozenTaskEntry = {
+  id: string;
+  card: TaskCard;
+  deckTitle: string;
+  frozenAt: string;
+  returnAfter: string;
+  reason: string;
+  minReentryMinutes: number;
+  contextSnapshot: string[];
+};
+
+export type FreezeReturnDecision = {
+  action: QueueAction;
+  restoredCard?: TaskCard;
+  reason: string;
+  priorityVector: PriorityVector;
+};
+
+export type PlanModeMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
+export type PlanModeOption = {
+  id: string;
+  label: string;
+  kind: "build" | "supplement" | "default-build" | "review";
+  description: string;
+  planId?: PlanOption["id"];
+};
+
+export type PlanModeTurnResult = {
+  status: "ready-to-build" | "needs-supplement" | "needs-review";
+  shouldBuildNow: boolean;
+  analysis: {
+    goalUnderstanding: string;
+    knownConstraints: string[];
+    missingInformation: string[];
+    timeJudgement: string;
+    recommendedDealMode: "deal-first-card" | "deal-two-cards" | "review-before-deal";
+  };
+  options: PlanModeOption[];
+  context: {
+    messagesUsed: number;
+    facts: string[];
+  };
+  assistantQuestion?: never;
+};
+
+export type ImportCoverageCheck = {
+  kind: "timetable-line-count" | "deadline-count" | "reminder-count" | "conflict-scan" | "omission-scan";
+  passed: boolean;
+  detail: string;
+};
+
+export type ImportConflict = {
+  kind: "same-time-conflict" | "duplicate-title" | "missing-deadline";
+  timeLabel?: string;
+  itemIds: string[];
+  detail: string;
+};
+
+export type ImportedTopLevelCard = {
+  id: string;
+  title: string;
+  sourceLine: string;
+  timeLabel?: string;
+  kind: "course" | "deadline" | "reminder" | "task";
+  reviewStatus: "pending";
+};
+
+export type ImportReviewResult = {
+  reviewRequired: boolean;
+  topLevelCards: ImportedTopLevelCard[];
+  dealNowCards: ImportedTopLevelCard[];
+  hiddenBacklogCards: ImportedTopLevelCard[];
+  coverageChecks: ImportCoverageCheck[];
+  possibleOmissions: string[];
+  conflicts: ImportConflict[];
+  userReviewPrompt: string;
+};
+
+export type BackendWorkerSnapshot = {
+  now: string;
+  queueItems: QueueItem[];
+  activeQueue: string[];
+  timeLocks: TimeLock[];
+  frozenTasks: FrozenTaskEntry[];
+  hiddenGoals: QueueItem[];
+  processedActionIds: string[];
+};
+
+export type BackendWorkerTickResult = {
+  tickId: string;
+  generatedAt: string;
+  actions: QueueAction[];
+  skippedActionIds: string[];
+  schedule: SchedulePlannerOutput;
+  freezeDecisions: FreezeReturnDecision[];
+};
