@@ -85,6 +85,15 @@ export type UploadedAttachment = {
   id: string;
   name: string;
   kind: "notice" | "document" | "unknown";
+  /**
+   * Parsed/summarized text content for this attachment.
+   *
+   * Historical name kept for backwards compatibility — it is **not** mock data.
+   * After /api/backend/import/review processes the upload, this holds the
+   * real parsed summary (top-level cards, deal-now hints, user review prompt).
+   * During upload (before the request resolves) it briefly contains a
+   * "正在解析…" placeholder.
+   */
   mockedText: string;
   size?: number;
   mimeType?: string;
@@ -93,6 +102,13 @@ export type UploadedAttachment = {
 export type UploadedImage = {
   id: string;
   name: string;
+  /**
+   * Parsed/summarized text content for this image.
+   *
+   * Historical name kept for backwards compatibility — it is **not** mock data.
+   * After /api/backend/import/review processes the image (or returns a 503
+   * with a friendly downgrade message), this holds the real text.
+   */
   parsedTimetable: string;
   size?: number;
   mimeType?: string;

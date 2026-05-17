@@ -4,7 +4,6 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
   mockAnalyzeInput,
-  mockApplyClarificationAnswer,
   mockGenerateClarifyingQuestion,
   mockGenerateDeckFromPlan,
   mockGeneratePlanOptions,
@@ -75,8 +74,6 @@ type NextCardStore = {
   closeDeckPanel: () => void;
   toggleFocusCardMode: () => void;
   setInputText: (text: string) => void;
-  addMockAttachment: () => void;
-  addMockImageSchedule: () => void;
   addImageUpload: (file: File) => void;
   addDocumentUpload: (file: File) => void;
   removeInputAttachment: (id: string) => void;
@@ -133,19 +130,6 @@ const defaultDeck: DeckState = {
   activeTimeMode: "idle"
 };
 
-const mockAttachment = (): UploadedAttachment => ({
-  id: `attachment-${Date.now()}`,
-  name: "assignment-notice.txt",
-  kind: "notice",
-  mockedText: "课程作业通知:今晚 20:00 前提交一页简短分析,需包含观点、例子和结论。"
-});
-
-const mockImage = (): UploadedImage => ({
-  id: `image-${Date.now()}`,
-  name: "mock-timetable.png",
-  parsedTimetable: "图像课表识别:明天 08:00 高数课,地点二教 304,建议提前 20 分钟出门。"
-});
-
 function makeDocumentAttachment(file: File): UploadedAttachment {
   return {
     id: `document-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
@@ -195,11 +179,25 @@ type ImportReviewResponse = {
   hiddenBacklogCards?: Array<{ id: string; title: string; sourceLine?: string }>;
   userReviewPrompt?: string;
   error?: string;
+  status?: number;
 };
+
+function friendlyImportError(error: string, status: number | undefined, fallbackName: string): string {
+  if (status === 503 || /multimodal/i.test(error) || /imageDataUrl/i.test(error)) {
+    return `「${fallbackName}」需要图像识别服务，但当前未配置。请直接在输入框补一句这张图的关键信息（例如课表内容/截止时间/事项），系统会按文字目标继续。`;
+  }
+  if (status === 502) {
+    return `「${fallbackName}」识别服务暂时不可用，先把这张图的关键内容打字补进来吧。`;
+  }
+  if (status === 400) {
+    return `「${fallbackName}」格式不被支持。建议改用 jpg/png/webp，或把内容粘贴成文字。`;
+  }
+  return `「${fallbackName}」未能解析（${error}）。先按目标说明继续，等一下再试上传。`;
+}
 
 function summarizeImportReview(result: ImportReviewResponse, fallbackName: string) {
   if (!result || result.error) {
-    return `（${fallbackName} 解析未完成${result?.error ? `：${result.error}` : ""}，先按文字目标继续。）`;
+    return friendlyImportError(result?.error ?? "无响应", result?.status, fallbackName);
   }
 
   const lines: string[] = [];
@@ -219,7 +217,7 @@ function summarizeImportReview(result: ImportReviewResponse, fallbackName: strin
     lines.push(`先发：${result.dealNowCards!.map((c) => c.title).join("、")}`);
   }
 
-  return lines.length > 0 ? lines.join("\n") : `（${fallbackName} 已加入，但后端没识别到明确条目。）`;
+  return lines.length > 0 ? lines.join("\n") : `（${fallbackName} 已加入，但后端没识别到明确条目。先在输入框补一句关键信息。）`;
 }
 
 async function callImportReview(payload: Record<string, unknown>): Promise<ImportReviewResponse | null> {
@@ -231,12 +229,56 @@ async function callImportReview(payload: Record<string, unknown>): Promise<Impor
     });
     const json = (await res.json().catch(() => null)) as ImportReviewResponse | null;
     if (!res.ok) {
-      return { error: json?.error ?? `import/review failed: ${res.status}` };
+      return { error: json?.error ?? `import/review failed: ${res.status}`, status: res.status };
     }
     return json;
   } catch (err) {
     return { error: err instanceof Error ? err.message : "网络异常" };
   }
+}
+
+/**
+ * Fire-and-forget worker tick. Sends the current deck state as a
+ * BackendWorkerSnapshot so the backend's priority engine, freeze sweep, and
+ * provider dispatch actually run against real data on key state transitions.
+ *
+ * The frontend does not currently apply the returned actions — the deck
+ * state is still managed locally by useNextCardStore. This call ensures the
+ * server-side scheduling pipeline is exercised (and logged) on every
+ * meaningful change, which lets us verify the path is live.
+ */
+function fireWorkerTick(deckCards: Array<{ id: string; status: string; estimatedMinutes: number; deadlineAt?: string }>): void {
+  if (typeof window === "undefined") return;
+  const now = new Date().toISOString();
+  const queueItems = deckCards.map((card) => ({
+    id: card.id,
+    title: card.id,
+    kind: "card" as const,
+    status: card.status === "frozen" ? ("frozen" as const) : card.status === "completed" || card.status === "rewarded" ? ("completed" as const) : ("queued" as const),
+    source: "text" as const,
+    createdAt: now,
+    estimatedMinutes: card.estimatedMinutes ?? 8,
+    deadlineAt: card.deadlineAt,
+    urgencyStage: "calm" as const,
+    timeLocks: []
+  }));
+
+  void fetch("/api/backend/worker/tick", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      now,
+      queueItems,
+      activeQueue: queueItems.filter((q) => q.status === "queued").map((q) => q.id),
+      timeLocks: [],
+      frozenTasks: [],
+      hiddenGoals: [],
+      processedActionIds: []
+    })
+  }).catch(() => {
+    // Intentionally swallow — this is observe-only. A failed tick must not
+    // disrupt the user's local deck progress.
+  });
 }
 
 function getParsedText(inputs: Pick<InputsState, "attachments" | "imageSchedule">) {
@@ -561,18 +603,18 @@ async function requestAiTurn(get: StoreGet, set: StoreSet): Promise<void> {
       const nextStatus = statusFromPhase(payload.next_phase);
 
       const validatedQuestion =
-        payload.next_phase === "asking" && payload.question && payload.question.options?.length
+        payload.question && payload.question.options?.length
           ? payload.question
-          : nextStatus === "asking"
+          : payload.next_phase === "asking" || nextStatus === "asking"
             ? current.clarifyingQuestion ?? mockGenerateClarifyingQuestion(current.inputs, nextAnalysis)
             : current.clarifyingQuestion;
 
-      const validatedPlans =
-        payload.next_phase === "ready" && payload.plans && payload.plans.length === 3
-          ? payload.plans
-          : nextStatus === "ready"
-            ? mockGeneratePlanOptions(nextAnalysis, current.clarificationAnswer)
-            : current.plans.options;
+      const backendPlans = Array.isArray(payload.plans) && payload.plans.length > 0 ? payload.plans : null;
+      const validatedPlans = backendPlans
+        ? backendPlans
+        : nextStatus === "ready"
+          ? mockGeneratePlanOptions(nextAnalysis, current.clarificationAnswer)
+          : current.plans.options;
 
       return {
         ...current,
@@ -681,36 +723,6 @@ export const useNextCardStore = create<NextCardStore>()(
             sourceType: getSourceType({ ...state.inputs, text })
           }
         })),
-      addMockAttachment: () =>
-        set((state) => {
-          const attachment = mockAttachment();
-          return {
-            inputs: {
-              ...state.inputs,
-              attachments: [...state.inputs.attachments, attachment],
-              parsedText: getParsedText({
-                attachments: [...state.inputs.attachments, attachment],
-                imageSchedule: state.inputs.imageSchedule
-              }),
-              sourceType: getSourceType({
-                ...state.inputs,
-                attachments: [...state.inputs.attachments, attachment]
-              })
-            }
-          };
-        }),
-      addMockImageSchedule: () =>
-        set((state) => {
-          const imageSchedule = mockImage();
-          return {
-            inputs: {
-              ...state.inputs,
-              imageSchedule,
-              parsedText: getParsedText({ attachments: state.inputs.attachments, imageSchedule }),
-              sourceType: getSourceType({ ...state.inputs, imageSchedule })
-            }
-          };
-        }),
       addImageUpload: (file) => {
         const imageSchedule = makeImageUpload(file);
 
@@ -1250,8 +1262,20 @@ export const useNextCardStore = create<NextCardStore>()(
             }
           };
         }),
-      freezeCurrentCard: () => get().freezeCurrentDeck(),
-      completeCurrentCard: (direction) =>
+      freezeCurrentCard: () => {
+        get().freezeCurrentDeck();
+        const after = get();
+        const activeDeck = after.deck.decks.find((d) => d.id === after.deck.activeDeckId);
+        if (activeDeck) {
+          fireWorkerTick(activeDeck.cards.map((c) => ({
+            id: c.id,
+            status: c.status,
+            estimatedMinutes: c.estimatedMinutes,
+            deadlineAt: c.deadlineAt ?? undefined
+          })));
+        }
+      },
+      completeCurrentCard: (direction) => {
         set((state) => {
           const activeDeck = state.deck.decks.find((deck) => deck.id === state.deck.activeDeckId);
           const currentIndex = activeDeck?.cards.findIndex((card) => card.id === state.deck.currentCardId) ?? -1;
@@ -1362,7 +1386,18 @@ export const useNextCardStore = create<NextCardStore>()(
               summaryDocument: mockGenerateProofSummary(records)
             }
           };
-        })
+        });
+        const after = get();
+        const activeDeck = after.deck.decks.find((d) => d.id === after.deck.activeDeckId);
+        if (activeDeck) {
+          fireWorkerTick(activeDeck.cards.map((c) => ({
+            id: c.id,
+            status: c.status,
+            estimatedMinutes: c.estimatedMinutes,
+            deadlineAt: c.deadlineAt ?? undefined
+          })));
+        }
+      }
     }),
     {
       name: "next-card-mvp",

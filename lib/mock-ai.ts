@@ -901,21 +901,3 @@ export function mockGenerateClarifyingQuestion(input: InputsState, analysis: Ana
     defaultOptionId: options[0].id
   };
 }
-
-export function mockApplyClarificationAnswer(
-  question: ClarifyingQuestion,
-  optionId: string
-): ClarificationAnswer | null {
-  const option = question.options.find((opt) => opt.id === optionId) ?? question.options[0];
-  if (!option) {
-    return null;
-  }
-
-  return {
-    questionId: question.id,
-    optionId: option.id,
-    label: option.label,
-    effect: option.effect
-  };
-}
-

@@ -58,23 +58,32 @@ export async function POST(request: NextRequest) {
   }
 
   const preferredProvider = getPreferredChatProvider();
+  const deepSeekAvailable = Boolean(process.env.DEEPSEEK_API_KEY);
 
-  if (preferredProvider === "deepseek") {
-    const deepSeek = await callDeepSeekChat(body);
-    if (deepSeek) {
-      return jsonResponse(deepSeek, 200);
+  // Provider order: explicit preference -> any configured provider -> local fallback.
+  const order: ChatProvider[] = preferredProvider === "deepseek"
+    ? ["deepseek", "mimo"]
+    : ["mimo", "deepseek"];
+
+  for (const provider of order) {
+    if (provider === "deepseek" && deepSeekAvailable) {
+      const result = await callDeepSeekChat(body);
+      if (result) return jsonResponse(result, 200);
+    }
+    if (provider === "mimo") {
+      // callPlanModeChat always returns (local fallback is built-in).
+      // Only emit it when the caller actually prefers mimo, OR DeepSeek is unavailable.
+      const shouldEmitPlanMode = preferredProvider === "mimo" || !deepSeekAvailable;
+      if (shouldEmitPlanMode) {
+        const result = await callPlanModeChat(body, latestUserText);
+        if (result) return jsonResponse(result, 200);
+      }
     }
   }
 
-  const mimo = await callPlanModeChat(body, latestUserText);
-  if (mimo) {
-    return jsonResponse(mimo, 200);
-  }
-
-  const deepSeek = await callDeepSeekChat(body);
-  if (deepSeek) {
-    return jsonResponse(deepSeek, 200);
-  }
+  // Last-resort fallback: never leave the client without a structured payload.
+  const lastResort = await callPlanModeChat(body, latestUserText);
+  if (lastResort) return jsonResponse(lastResort, 200);
 
   return jsonResponse({ payload: FALLBACK_PAYLOAD, fallback: true, provider: "local" satisfies ChatProvider }, 200);
 }
@@ -156,6 +165,12 @@ function planModeToAiReplyPayload(
   const nextPhase = result.status === "ready-to-build" ? "ready" : "asking";
   const missing = result.analysis.missingInformation;
   const buildOptions = result.options.filter((option) => option.kind === "build");
+  // Always emit plans when the planner has any build options, even if the
+  // turn is still in `asking`. The frontend can preview them; otherwise the
+  // store falls back to mock plans which look identical for every user.
+  const plans = buildOptions.length > 0
+    ? mergeProviderPlans(input, buildOptions.slice(0, 3))
+    : null;
 
   return {
     reply:
@@ -166,7 +181,7 @@ function planModeToAiReplyPayload(
           : "这次适合先检阅一下，再发第一张牌。",
     next_phase: nextPhase,
     question: nextPhase === "asking" ? buildQuestion(result) : null,
-    plans: buildOptions.length >= 3 ? mergeProviderPlans(input, buildOptions.slice(0, 3)) : null,
+    plans,
     analysis_patch: {
       sourceType: input.sourceType,
       goalUnderstanding: result.analysis.goalUnderstanding,
@@ -196,14 +211,19 @@ function mergeProviderPlans(
   };
   const localOptions = mockGeneratePlanOptions(mockAnalyzeInput(analysisInput));
 
+  // Always return three slots (the UI assumes plan-1/2/3). When the provider
+  // only gives 1 or 2 build options we keep the local labels for the rest
+  // rather than dropping them silently.
   return localOptions.map((option, index) => {
     const providerOption = providerOptions[index];
-
+    if (!providerOption) {
+      return option;
+    }
     return {
       ...option,
-      id: providerOption?.planId ?? option.id,
-      name: providerOption?.label || option.name,
-      summary: providerOption?.description || option.summary
+      id: providerOption.planId ?? option.id,
+      name: providerOption.label || option.name,
+      summary: providerOption.description || option.summary
     };
   });
 }
