@@ -652,29 +652,74 @@ function enforceTurnBudget(
   const used = turnCount + 1;
   const remaining = Math.max(0, TURN_BUDGET_TOTAL - used);
 
+  // When we forcibly close the loop and pull the model into `ready`, we must
+  // give the user a sentence that signals "I've heard enough — here are your
+  // options" with whatever specifics we already have. Returning an empty
+  // reply here makes the UI feel like the AI froze. Build one grounded in
+  // the analysis we collected so far rather than a stock template. We also
+  // treat raw-JSON-leaking replies (e.g. v4-pro occasionally emits a stitched
+  // second JSON object inside its text) as junk and rebuild fresh.
+  const closingReply = (existing: string) => {
+    const trimmed = (existing ?? "").trim();
+    const looksLikeRawJson = /"next_phase"\s*:|"reply"\s*:|^\s*\{[\s\S]*"reply"/.test(trimmed);
+    if (trimmed && !looksLikeRawJson) {
+      return trimmed;
+    }
+    return composeClosingReply(payload, messages);
+  };
+
   if (remaining <= 0) {
     return {
       ...payload,
       next_phase: "ready",
-      reply: payload.next_phase === "ready" ? payload.reply : ""
+      reply: closingReply(payload.reply)
     };
   }
 
   if (remaining <= 1 && (payload.next_phase === "thinking" || payload.next_phase === "asking")) {
-    return { ...payload, next_phase: "ready", reply: "" };
+    return { ...payload, next_phase: "ready", reply: closingReply(payload.reply) };
   }
 
+  // Hard rule from the system prompt: by the third user turn we must already
+  // be at generating/ready. A model still trying to think on turn 3 is told
+  // to commit; if it has a real clarifying question we keep it as `asking`,
+  // otherwise we close out.
   if (used >= 3 && payload.next_phase === "thinking") {
-    return { ...payload, next_phase: "asking" };
+    return { ...payload, next_phase: "ready", reply: closingReply(payload.reply) };
   }
 
   if (detectRepetitiveQuestion(messages, payload.reply)) {
     if (payload.next_phase === "thinking" || payload.next_phase === "asking") {
-      return { ...payload, next_phase: "ready", reply: "" };
+      return { ...payload, next_phase: "ready", reply: closingReply(payload.reply) };
     }
   }
 
   return payload;
+}
+
+// Build a closing line for forced ready transitions. Pulls from the analysis
+// patch the model already filled in so the sentence references the user's
+// actual goal/deadline instead of a stock phrase. Non-templated, terse,
+// matches the system prompt's "果断" closing voice.
+function composeClosingReply(payload: AIReplyPayload, messages: ChatMessage[]): string {
+  const goal = payload.analysis_patch?.goalUnderstanding?.trim();
+  const deadline = payload.analysis_patch?.deadlineLabel?.trim();
+  const lastUser = [...messages].reverse().find((m) => m.role === "user")?.text.trim() ?? "";
+  const userSnippet = lastUser ? lastUser.slice(0, 14) : "";
+
+  if (goal && deadline) {
+    return `够了——按「${deadline}」前的「${goal}」给你三套，不对你点一下我重做。`;
+  }
+  if (goal) {
+    return `够了——按「${goal}」给你三套，不对你点一下我重做。`;
+  }
+  if (deadline) {
+    return `按「${deadline}」给你三套先看着。`;
+  }
+  if (userSnippet) {
+    return `「${userSnippet}…」我按这个给你三套，不对再调。`;
+  }
+  return "我按当前理解给你三套，不对再调。";
 }
 
 async function requestAiTurn(get: StoreGet, set: StoreSet, opts?: { regenerate?: boolean }): Promise<void> {

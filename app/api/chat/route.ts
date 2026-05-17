@@ -106,6 +106,37 @@ async function callDeepSeekChat(body: ChatRequestBody) {
   // that we have observed thinking go past 8k tokens — keep the budget high.
   const maxTokens = 16000;
 
+  // v4-pro occasionally returns end_turn with only a thinking block and no
+  // text block. One automatic retry catches the flake without making every
+  // call wait twice. If both attempts are empty we fall through to local.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const text = await invokeDeepSeekOnce(body, maxTokens, attempt);
+    if (text === null) return null; // hard error — don't retry
+    if (text) {
+      return {
+        payload: normalizeAiReplyPayload(parsePayload(text), {
+          inputText: getLatestUserText(body.messages) || "当前目标",
+          sourceType: body.sourceType ?? "text",
+          parsedText: [body.parsedText, body.contextNote].filter(Boolean).join("\n"),
+          regenerate: body.regenerate === true,
+          previousPlans: Array.isArray(body.previousPlans) ? body.previousPlans : [],
+          userTurnCount: countUserTurns(body.messages)
+        }),
+        fallback: false,
+        provider: "deepseek" as const
+      };
+    }
+    // empty text: loop and retry
+  }
+
+  return null;
+}
+
+async function invokeDeepSeekOnce(
+  body: ChatRequestBody,
+  maxTokens: number,
+  attempt: number
+): Promise<string | null | ""> {
   try {
     const response = await fetch(DEEPSEEK_ANTHROPIC_ENDPOINT, {
       method: "POST",
@@ -123,28 +154,36 @@ async function callDeepSeekChat(body: ChatRequestBody) {
     }
 
     const data = (await response.json()) as {
-      content?: Array<{ type?: string; text?: string }>;
+      content?: Array<{ type?: string; text?: string; thinking?: string }>;
       stop_reason?: string;
     };
-    const text =
-      data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
-    if (!text) {
-      console.error("[chat] deepseek empty text, stop_reason=", data.stop_reason);
-      return null;
+    const blocks = data.content ?? [];
+    const textBlock = blocks.find((b) => b.type === "text")?.text?.trim() ?? "";
+
+    if (textBlock) {
+      return textBlock;
     }
 
-    return {
-      payload: normalizeAiReplyPayload(parsePayload(text), {
-        inputText: getLatestUserText(body.messages) || "当前目标",
-        sourceType: body.sourceType ?? "text",
-        parsedText: [body.parsedText, body.contextNote].filter(Boolean).join("\n"),
-        regenerate: body.regenerate === true,
-        previousPlans: Array.isArray(body.previousPlans) ? body.previousPlans : [],
-        userTurnCount: countUserTurns(body.messages)
-      }),
-      fallback: false,
-      provider: "deepseek" as const
-    };
+    // v4-pro frequently ends a turn after the thinking block without
+    // emitting a text block. The thinking block is technically internal,
+    // but losing the whole turn is worse than salvaging it. Try to pull a
+    // JSON object out of thinking; if there is one, use it as the model's
+    // intended reply. If not, fall through to retry/local fallback rather
+    // than surfacing raw inner monologue to the user.
+    const thinkingBlock = blocks.find((b) => b.type === "thinking")?.thinking?.trim() ?? "";
+    if (thinkingBlock) {
+      const salvaged = extractFirstJsonObject(thinkingBlock);
+      if (salvaged) {
+        console.warn(`[chat] deepseek salvaged JSON from thinking block (attempt ${attempt + 1}/2)`);
+        return salvaged;
+      }
+    }
+
+    console.error(
+      `[chat] deepseek empty text (attempt ${attempt + 1}/2), stop_reason=`,
+      data.stop_reason
+    );
+    return "";
   } catch (err) {
     console.error("[chat] deepseek threw:", err);
     return null;
@@ -308,11 +347,20 @@ function normalizeAiReplyPayload(
   // the user's very first message. If it tries, demote — to `asking` when
   // it actually has a question to ask, otherwise `thinking` so the user
   // gets a verbal probe instead of an empty options panel.
-  const isFirstTurn = !input.regenerate && (input.userTurnCount ?? 0) <= 1;
+  const userTurns = input.userTurnCount ?? 0;
+  const isFirstTurn = !input.regenerate && userTurns <= 1;
   const blockReady = isFirstTurn && requestedPhase === "ready";
 
   // `asking` without a question is a shape mismatch — render chat-only.
-  const askingDemotedToThinking = requestedPhase === "asking" && !hasValidQuestion;
+  // BUT: we only allow this open-ended-thinking demotion in the first 2
+  // turns. From turn 3 onward the system prompt forbids further thinking
+  // (the user has already given enough); if the model still fails to
+  // attach a question we fall through to ready so the loop closes.
+  const stillExploring = userTurns < 3;
+  const askingDemotedToThinking =
+    requestedPhase === "asking" && !hasValidQuestion && stillExploring;
+  const askingForcedToReady =
+    requestedPhase === "asking" && !hasValidQuestion && !stillExploring;
 
   const nextPhase: AIReplyPayload["next_phase"] = blockReady
     ? hasValidQuestion
@@ -320,20 +368,34 @@ function normalizeAiReplyPayload(
       : "thinking"
     : askingDemotedToThinking
       ? "thinking"
-      : requestedPhase;
+      : askingForcedToReady
+        ? "ready"
+        : requestedPhase;
 
-  const plans =
-    nextPhase === "ready" && Array.isArray(parsed.plans)
-      ? mergeProviderPlans(
-          input,
-          parsed.plans.slice(0, 3).map((plan) => ({
-            label: plan.name,
-            description: plan.summary,
-            planId: plan.id
-          })),
-          input.regenerate ? input.previousPlans : undefined
-        )
-      : null;
+  // When ready, always emit three plan slots — either from the model's own
+  // payload, or, if it shipped a partial/empty list (e.g. we just forced
+  // ready because asking had no question), from the local seed so the UI
+  // never lands on `ready` with an empty options grid.
+  let plans: PlanOption[] | null = null;
+  if (nextPhase === "ready") {
+    if (Array.isArray(parsed.plans) && parsed.plans.length > 0) {
+      plans = mergeProviderPlans(
+        input,
+        parsed.plans.slice(0, 3).map((plan) => ({
+          label: plan.name,
+          description: plan.summary,
+          planId: plan.id
+        })),
+        input.regenerate ? input.previousPlans : undefined
+      );
+    } else {
+      plans = mergeProviderPlans(
+        input,
+        [],
+        input.regenerate ? input.previousPlans : undefined
+      );
+    }
+  }
 
   return {
     reply: typeof parsed.reply === "string" && parsed.reply.trim() ? parsed.reply.trim() : FALLBACK_PAYLOAD.reply,
@@ -361,20 +423,78 @@ function parsePayload(content: string): Partial<AIReplyPayload> {
     return FALLBACK_PAYLOAD;
   }
 
-  try {
-    const cleaned = content
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```\s*$/i, "")
-      .trim();
+  // Strip markdown fences first.
+  const stripped = content
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
 
-    return JSON.parse(cleaned) as Partial<AIReplyPayload>;
+  // Try a clean parse first (the common case when the model honors the
+  // protocol exactly).
+  try {
+    return JSON.parse(stripped) as Partial<AIReplyPayload>;
   } catch {
-    return {
-      ...FALLBACK_PAYLOAD,
-      reply: content.slice(0, 200) || FALLBACK_PAYLOAD.reply
-    };
+    // Fall through: the model occasionally emits extra prose around the
+    // JSON, or two stitched-together JSON objects. Walk the string and
+    // bracket-balance the FIRST complete object.
   }
+
+  const extracted = extractFirstJsonObject(stripped);
+  if (extracted) {
+    try {
+      return JSON.parse(extracted) as Partial<AIReplyPayload>;
+    } catch {
+      // give up
+    }
+  }
+
+  return {
+    ...FALLBACK_PAYLOAD,
+    reply: stripped.slice(0, 200) || FALLBACK_PAYLOAD.reply
+  };
+}
+
+// Walk a string and return the substring of its first balanced { ... } block.
+// Skips quoted strings (so braces inside JSON string values don't confuse the
+// counter) and respects backslash escapes inside strings.
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 function getLatestUserText(messages: ChatMessage[]) {
