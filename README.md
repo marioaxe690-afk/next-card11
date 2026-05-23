@@ -1,303 +1,271 @@
+<div align="center">
+
 # Next Card
 
-Next Card turns a one-sentence goal, written plan, attachment, notification, or
-image timetable into an AI-planned task card deck. The user picks one of three
-execution plans, then completes decomposed action cards through a swipe-driven
-deck. Completion, freeze, burn, reschedule, and reward events get written into
-a proof log so the work becomes visible evidence.
+**把模糊的目标,变成可滑动的卡组,变成可见的行动证据。**
 
-It runs as a Next.js (App Router) web app, sized like a single mobile WebView
-so it can later be wrapped into an Android APK without re-doing layout.
+[![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![Tailwind](https://img.shields.io/badge/Tailwind-3.4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![Zustand](https://img.shields.io/badge/Zustand-5-orange)](https://github.com/pmndrs/zustand)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-## Run
+[English](./README.en.md) · [架构文档](./docs/ARCHITECTURE.md) · [产品契约](./docs/PRD.md)
+
+</div>
+
+---
+
+## 这是什么
+
+Next Card 不是又一个 Todo App。它面对一个具体的人:**有一件想做但动不起来的事**——可能是赶 ddl、要去一节快迟到的课、或者一个含糊的"今天该推一下"。
+
+输入一句话,AI 给三套**已经拆解到下一步动作**的方案;选一个之后,任务变成可滑动的卡组,卡片自己显示燃烧/冻结/裂痕来表达时间压力,而不是用红色感叹号让你愧疚;每完成、冻结、燃烧、重新安排一次,**都被写进 proof 里成为可见证据**。
+
+> *"今天你完成了 2 个阶段目标,1 张卡用快速燃烧模式在 6 分钟内完成最低可行动作,1 张卡选择了先冻结,系统已保留上下文,适合明天继续。"*
+
+这是 proof 在每一次行动之后给你的总结——不是 XP、不是连击、不是徽章,**是把行为变成可读的故事**。
+
+---
+
+## 三个画面
+
+<table>
+<tr>
+<td width="33%" align="center"><b>input</b><br/>ChatGPT 风格的 composer<br/>AI 用 Plan Mode 出三套方案</td>
+<td width="33%" align="center"><b>deck</b><br/>Reigns 风格的单卡决策面<br/>滑动 / 双击 / 三击 / 下拉冻结</td>
+<td width="33%" align="center"><b>proof</b><br/>彩色表 + 图表 + 博客式日志<br/>AI 总结今天发生了什么</td>
+</tr>
+<tr>
+<td><img src="./docs/screenshots/01-input.png" alt="Input mode" /></td>
+<td><img src="./docs/screenshots/02-deck.png" alt="Deck mode" /></td>
+<td><img src="./docs/screenshots/03-proof.png" alt="Proof mode" /></td>
+</tr>
+</table>
+
+> 截图来自本地 Demo,使用本地 mock AI 生成,无需任何 API key 即可复现。
+
+---
+
+## 为什么不是又一个 Todo
+
+| Todo App 的问题 | Next Card 的回应 |
+|---|---|
+| 把"学高数"写进列表,但你不会因此动起来 | AI 把目标拆成"圈出作业要求里必须提交的 3 个点"这种**下一步动作** |
+| 红色 ddl + 未完成数量 = 愧疚机器 | 时间压力变成卡片**燃烧/冻结/裂痕**的视觉,引导而非羞辱 |
+| 完成了打个勾,没有积累感 | 每个动作写入 proof,**行为变成可见证据**而不是被划掉的一行 |
+| 卡住了只能放着烂 | **冻结**会保留上下文,到点之后 AI 重新分析:恢复 / 拆小 / 继续等待 |
+
+---
+
+## 工程亮点
+
+> 想直接看代码地图,跳到 [架构文档](./docs/ARCHITECTURE.md)。
+
+### 双 Agent 架构
+
+不是一个万能 LLM 调用包一切,而是两个职责独立的 Agent:
+
+- **Agent 1 — 澄清与规划**(`lib/server/plan-mode-service.ts`):四阶段状态机 `thinking → asking → generating → ready`,前后端共享 `CLARIFICATION_TURN_BUDGET = 5` 强制收束,**禁止无限反问**
+- **Agent 2 — 调度与推送**(`lib/server/schedule-planner.ts` + `priority-engine.ts`):产出 `QueueAction[]`,经过 runtime guard 才能落地
+
+边界用类型化协议传递,`lib/types.ts` 是协议层。
+
+### Provider Cascade(供应商降级链)
+
+```
+NEXT_CARD_CHAT_PROVIDER → DeepSeek → Mimo → Local Mock
+```
+
+无 API key 也能跑完整流程——`lib/mock-ai.ts` 是**完整可用的兜底**,产出确定性方案,UI 永远拿到 3 个 plan。这意味着你 clone 下来 `pnpm dev` 立即就能完整体验,不用配任何环境变量。
+
+### Runtime Guard(声明配置 → 运行时强制)
+
+`lib/server/agent-runtime.ts` 不是文档,是**运行时强制**。16 个 skill × 6 个 trigger 的注册表,`applyAgentRuntimeGuard()` 把 trigger 的 action 白名单作为闸门:
+
+```ts
+// worker-tick 不可能"不小心"产出 reveal-hidden-goal
+// 即使代码 bug,guard 层也会兜住,标 requiresUserReview = true
+// provider-dispatch 跳过任何 requiresUserReview = true 的 action
+```
+
+### Preview / Dispatch 二段提交
+
+`/api/backend/worker/tick` 默认 `persist: false, dispatch: false`——**任何前端 bug 都污染不了服务端状态,也骚扰不到用户**。只有 `FreezeReturnScheduler` 在到达 returnAfter 时才显式 opt-in。
+
+### 多因子优先级引擎
+
+`calculatePriorityVector()` 把 5 个维度加权:
+
+```
+deadlineRisk × 0.35  +  behaviorPressure × 0.20  +
+freezeAge × 0.15  +  timeLockRisk × 0.20  +  contextCost × 0.10
+```
+
+硬时间锁 (`canAgentMove: false`) **只产 suggestion**,不会自动 move——这是死规则。
+
+### 6 个 Agent Persona,各自带技能权重
+
+`balanced-coach / deadline-guardian / micro-splitter / sprint-driver / gentle-recovery / meaning-coach` —— 每个 persona 有自己的 `skillWeights` 表(微动作拆牌权重 0.96 / 0.55,deadline 保护 0.95 / 0.28),适配不同场景。
+
+### 反 AI 腔的 Prompt 工程
+
+`lib/ai-prompts.ts` 里有一段直接禁用的句式清单——否定排比("不是 X,而是 Y")、万金油("具体情况而异")、客服收尾("还有什么我能帮您的吗")——实测让对话明显不像 AI 助手。
+
+### Zustand Schema 版本迁移
+
+持久化 schema 版本号 = 4。v3 → v4 迁移自动 backfill `frozenTasks: []`,**老用户从 v3 升级不会白屏**。
+
+### 移动 WebView 单屏契约
+
+`lib/webview-contract.ts` 定义了能在 Android WebView 里安全使用的 API 子集。UI 只用 ~430px 单屏布局——**同一份代码可以直接打包成 APK,不需要重写**。
+
+---
+
+## 技术栈
+
+| 层 | 选型 | 选它的理由 |
+|---|---|---|
+| 框架 | Next.js 15 App Router | Route Handlers + Node runtime 同时承载前端与 Agent 服务 |
+| 语言 | TypeScript 5.9 | 协议层 (`lib/types.ts`) 即文档 |
+| 状态 | Zustand 5 + persist | 中等复杂度的最佳点;比 Redux 轻,比 Context 稳 |
+| 样式 | Tailwind 3.4 | 卡片视觉细节多,utility-first 最快 |
+| 动效 | Framer Motion 12 | 滑动手势 + spring 物理 + layout 动画一站式 |
+| 图标 | lucide-react | 风格统一、tree-shake 友好 |
+| 推送 | web-push (VAPID) | 标准化、跨浏览器、无供应商锁定 |
+| 日历 | ics | 生成标准 ICS,任何日历都能导入 |
+| LLM | DeepSeek / Mimo / Local Mock | Cascade 降级,Demo 永远可跑 |
+
+---
+
+## 快速开始
 
 ```bash
+# 安装
 pnpm install
+
+# 启动(无需任何环境变量,本地 mock 即可完整体验)
 pnpm dev          # http://127.0.0.1:3000
+
+# 构建
+pnpm build
+
+# Lint
 pnpm lint
-pnpm build        # full Next.js build (server routes included, see below)
 ```
 
-> Note: `pnpm build` produces a normal Next.js production build with API
-> routes. There is no `output: "export"` and no `out/` directory. If you need
-> a static bundle for an Android APK that only loads HTML/JS, you must add
-> `output: "export"` to `next.config.mjs` and remove the API routes (or stub
-> them out). The current build assumes a Node.js host.
+### 想接入真 AI(可选)
 
-### Optional environment variables
+```bash
+# .env.local
+DEEPSEEK_API_KEY=sk-...               # 接入 DeepSeek
+DEEPSEEK_MODEL=deepseek-chat          # 默认 deepseek-chat
 
-The app degrades gracefully when these are missing — chat falls back to a
-local mock planner, push falls back to no-op, calendar writes to a temp dir.
+# 或者 Mimo
+MIMO_API_KEY=...
+MIMO_BASE_URL=...
 
-```text
-# Chat / planning
-DEEPSEEK_API_KEY            # if set, /api/chat tries DeepSeek first
-DEEPSEEK_BASE_URL           # defaults to https://api.deepseek.com
-DEEPSEEK_MODEL              # defaults to deepseek-chat
-NEXT_CARD_CHAT_PROVIDER     # "deepseek" | "mimo" (default mimo)
-
-MIMO_API_KEY / MIMO_BASE_URL / MIMO_MODEL  # optional Mimo backend
-                            # When unset, the local plan-mode service is used.
-
-# Web Push (Agent 2 reminders)
-NEXT_CARD_PUSH_VAPID_SUBJECT       # mailto: or https:// URL
-NEXT_CARD_PUSH_VAPID_PUBLIC_KEY
-NEXT_CARD_PUSH_VAPID_PRIVATE_KEY
-NEXT_CARD_PUSH_TTL_SECONDS         # default 3600
-NEXT_CARD_PUSH_SUBSCRIPTIONS_FILE  # JSON file path; default tmpdir
-
-# Queue snapshot persistence
-NEXT_CARD_QUEUE_REPOSITORY  # "memory" or default JSON file
-NEXT_CARD_QUEUE_FILE        # JSON file path; default tmpdir
-
-# ICS calendar export
-NEXT_CARD_CALENDAR_DIR
-NEXT_CARD_CALENDAR_NAME
-NEXT_CARD_CALENDAR_PRODUCT_ID
-NEXT_CARD_CALENDAR_DEFAULT_DURATION_MINUTES   # default 25
-
-NEXT_PUBLIC_APP_URL                # used in push payload `url`
+# 二者都没设,自动 fallback 到本地 mock
 ```
 
-If you run with none of these set, the app still works end to end against the
-local mock planner and skips push/calendar dispatch.
+完整环境变量列表见 [docs/PRD.md 末尾](./docs/PRD.md#optional-environment-variables) 或源码 `lib/server/compat-ai-service.ts`。
 
-## Stack
+---
 
-- Next.js 15 App Router (Node runtime for API routes)
-- TypeScript
-- Tailwind CSS
-- Zustand + `localStorage` persist (schema v4)
-- Framer Motion + lucide-react
-- `web-push` (VAPID) and `ics` (calendar export)
+## 项目结构
 
-## Mobile WebView Target
-
-The UI is sized for a single mobile WebView frame. Desktop browsers see a
-centered ~430px preview. There are no desktop two-column layouts and no
-desktop-only breakpoints.
-
-```text
-lib/webview-contract.ts    # WebView shape contract
+```
+next-card11/
+├── app/                          # Next.js App Router
+│   ├── api/                      # Route Handlers
+│   │   ├── chat/                 #   Agent 1 入口
+│   │   ├── ai/                   #   澄清 / 解析 / 规划
+│   │   ├── agent/                #   AgentScheduleAction 校验
+│   │   └── backend/              #   Agent 2:worker/freeze/push/calendar
+│   ├── layout.tsx
+│   └── page.tsx                  # 单页模式切换
+│
+├── components/
+│   ├── input/                    # ChatPanel / ClarifyingPanel / PlanChoicePanel
+│   ├── deck/                     # SwipeTaskCard / FreezePrompt / RewardCard
+│   ├── flow/                     # TaskFlowOverview
+│   ├── proof/                    # ProofDashboard
+│   ├── TopModeTabs.tsx           # input / deck / proof
+│   └── FreezeReturnScheduler.tsx # 客户端定时驱动
+│
+├── lib/
+│   ├── types.ts                  # 协议层
+│   ├── ai-prompts.ts             # System prompt + 反 AI 腔禁区
+│   ├── mock-ai.ts                # 本地兜底(完整可用)
+│   ├── ai-client.ts              # 客户端调用封装
+│   ├── card-time-engine.ts       # 燃烧/冻结/裂痕状态机
+│   ├── webview-contract.ts       # WebView API 契约
+│   └── server/                   # Agent 2 调度引擎
+│       ├── agent-runtime.ts      # ★ 16 skill × 6 trigger + runtime guard
+│       ├── priority-engine.ts    # ★ 多因子优先级打分
+│       ├── schedule-planner.ts   # ★ 产出 QueueAction[]
+│       ├── freeze-return-agent.ts
+│       ├── plan-mode-service.ts  # Agent 1 状态机
+│       ├── compat-ai-service.ts  # Provider cascade
+│       └── providers/            # Web Push / ICS Calendar
+│
+├── store/
+│   └── useNextCardStore.ts       # Zustand + persist (schema v4)
+│
+└── docs/
+    ├── PRD.md                    # 产品契约(原 AGENTS.md)
+    ├── ARCHITECTURE.md           # 系统设计文档
+    └── screenshots/              # 截图
 ```
 
-Android wrapper requirements when packaging:
+---
 
-```kotlin
-webView.settings.javaScriptEnabled = true
-webView.settings.domStorageEnabled = true   // Zustand persist needs this
-webView.settings.loadWithOverviewMode = true
-webView.settings.useWideViewPort = true
-```
+## 路线图
 
-The current Next.js build is **not** a static export. To ship the WebView as
-local APK assets you have two options:
+**已完成**
 
-1. Point the WebView at a hosted Next.js deployment (HTTPS).
-2. Add `output: "export"` and stub `app/api/**` routes — chat/import/push are
-   server-only by design.
+- [x] Plan Mode 四阶段对话状态机
+- [x] 6 个 Agent persona × 16 个 skill 注册表
+- [x] 优先级引擎 + freeze return + ICS 导出
+- [x] Runtime guard + preview/dispatch 二段提交
+- [x] Zustand persist 版本迁移 (v3→v4)
+- [x] Provider cascade (DeepSeek / Mimo / Local Mock)
 
-## Modes
+**进行中 / 计划中**
 
-The app exposes three primary modes — `input / deck / proof` — and nothing
-else. Mode switching is in `app/page.tsx` and `components/TopModeTabs.tsx`.
-Don't add a fourth mode without revisiting the product contract in
-`AGENTS.md`.
+- [ ] 客户端 Service Worker 订阅(服务端 Push 已通)
+- [ ] 服务端定时 worker tick(Vercel Cron / Node scheduler)
+- [ ] `requiresUserReview` 落地到 proof 的 review queue
+- [ ] WebView 微调:drag 阈值 / 双/三击 / WebAudio / 安全区 / Android back
+- [ ] Android APK 打包脚本
 
-### input
+---
 
-ChatGPT-style composer that accepts text, document attachments, and image
-timetables. The flow is **understand → ask → plan**, in that order:
+## 文档地图
 
-- AI replies in `thinking` (gathering) → `asking` (one-question clarify with
-  three options + "按默认理解直接生成方案") → `generating` → `ready` (three
-  execution plans + 否，重新生成).
-- Plans are not emitted while the AI is still in `asking`. Users see the
-  question first, not the plans.
-- The clarification turn budget is a single source of truth in
-  `lib/ai-prompts.ts` (`CLARIFICATION_TURN_BUDGET = 5`); both the `/api/chat`
-  / `/api/ai/clarify` server entries and the frontend store enforce the same
-  cap.
-- "否，重新生成" actually rerolls plan content via `mockRegeneratePlanOptions`
-  on the server (`regenerate: true` is forwarded into `/api/chat`), instead
-  of returning identical labels.
+| 文档 | 看什么 |
+|---|---|
+| [README.md](./README.md) | 你在这里 |
+| [README.en.md](./README.en.md) | English version |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 系统设计、双 Agent 边界、安全机制 |
+| [docs/PRD.md](./docs/PRD.md) | 产品规则、卡片状态、验收标准(给 AI Coding Agent) |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 贡献指南 |
 
-### deck
+---
 
-Reigns-style single-card execution surface.
+## 作者
 
-- Generated decks appear as covers; opening one reveals one card at a time.
-- Cards display title, action, estimated minutes, deadline / suggested-start
-  window, urgency stage, and a time rail on the card itself.
-- Interactions: double-click → start timing (with sparks + WebAudio fallback);
-  triple-click → quick burning mode; left/right swipe or button → complete;
-  down swipe → status bar; deeper down swipe → freeze prompt.
-- Freezing a card writes a `FrozenTaskEntry` (Agent 2 picks it up — see
-  below).
+本项目由 [@marioaxe690-afk](https://github.com/marioaxe690-afk) 开发,原为 AI 创作比赛参赛作品,现作为开源项目持续迭代。
 
-### proof
+对项目有任何问题、合作意向或反馈,欢迎通过以下方式联系:
 
-Visible evidence dashboard.
+- GitHub Issues:[next-card11/issues](https://github.com/marioaxe690-afk/next-card11/issues)
+- Email:marioaxe690@gmail.com
 
-- Stat cards, colored action table, completion ring, charts.
-- Blog-style flow journal with chronological entries.
-- AI-generated summary document.
-- Records come from plan selection, timing, completion, freezing, burning,
-  reward generation, and freeze-return reminders.
+如果觉得有意思,star 一下会让我开心很久。
 
-## Two AI Agents
-
-The system has two agents with clear boundaries.
-
-### Agent 1 — Clarification / requirement capture
-
-Takes raw user input and turns it into a structured target the planner can
-build cards from. Lives in:
-
-```text
-app/api/chat/route.ts
-app/api/ai/clarify/route.ts
-lib/server/plan-mode-service.ts
-lib/server/compat-ai-service.ts
-components/input/InputComposer.tsx (ChatPanel / ClarifyingPanel / GeneratingPanel / PlanChoicePanel)
-store/useNextCardStore.ts (requestAiTurn, clarifyingQuestion, plans)
-```
-
-Responsibilities:
-
-- Detect missing information (`missingInformation`) before building.
-- Drive the four-phase loop above.
-- Honor the 5-round budget; force `ready` once it's exhausted.
-- Provider order: `NEXT_CARD_CHAT_PROVIDER` → DeepSeek (if `DEEPSEEK_API_KEY`
-  is set) → Mimo (if configured) → local fallback.
-
-### Agent 2 — Time scheduling and push
-
-Owns the entire "what should fire when, and how do we tell the user" surface.
-Sub-modules:
-
-- **Freeze-return reminders** — when a user freezes a card, compute
-  `returnAfter` (deadline-30min → suggestedStart → now+90min) and remind them
-  to come back. `components/FreezeReturnScheduler.tsx` is the client-side
-  driver: it (re-)registers a `setTimeout` per pending entry on every store
-  change, calls `triggerFreezeReturn` at the deadline, and POSTs a
-  `dispatch: true` worker tick so Web Push fires too.
-- **Priority sorting** — `lib/server/priority-engine.ts` +
-  `lib/server/schedule-planner.ts`. Reads behavior vector / deadline / time
-  locks / freeze age and produces `QueueAction[]`.
-- **Reminder & calendar sync** — when the user opts in (`reminderSync` /
-  `calendarSync` set to `wanted` or `synced`), the planner produces
-  `create-reminder` / `create-calendar-event` actions. Pure urgency-driven
-  reminders without an opt-in are flagged `requiresUserReview: true` so
-  `lib/server/provider-dispatch.ts` skips them instead of silently pushing.
-- **Hidden goal reveal** — hidden future tasks only surface as
-  `reveal-hidden-goal` actions when their priority crosses a threshold, and
-  always with `requiresUserReview: true`.
-- **ICS export** — `lib/server/providers/ics-calendar-provider.ts`.
-
-Files:
-
-```text
-lib/server/agent-runtime.ts            # skill registry + runtime guard
-lib/server/backend-worker.ts           # worker tick orchestration
-lib/server/schedule-planner.ts
-lib/server/priority-engine.ts
-lib/server/freeze-return-agent.ts
-lib/server/freeze-sweep.ts
-lib/server/schedule-agent.ts           # AgentScheduleAction compat surface
-lib/server/provider-dispatch.ts
-lib/server/providers/web-push-notification-provider.ts
-lib/server/providers/ics-calendar-provider.ts
-components/FreezeReturnScheduler.tsx   # client-side timer driver
-```
-
-Safety properties enforced:
-
-- `worker tick` route accepts client snapshots in **preview mode** by default
-  (`persist: false`, `dispatch: false`). It will not overwrite the server
-  queue snapshot or push to subscribers unless the caller explicitly opts in.
-- `provider-dispatch` skips any action with `requiresUserReview: true`.
-- `applyAgentRuntimeGuard` (in `agent-runtime.ts`) filters QueueAction kinds
-  against the trigger's allowlist — e.g. a `worker-tick` cannot mint a
-  `reveal-hidden-goal` that bypasses review.
-- Hard time locks (`canAgentMove: false`) only generate suggestions, never
-  silent moves.
-
-## API Routes
-
-```text
-POST /api/chat                       # streamed-style structured chat (DeepSeek/Mimo/local)
-POST /api/ai/clarify                 # one-shot clarification turn
-POST /api/ai/parse                   # multimodal import parser
-POST /api/ai/plan                    # compat planning bundle (analysis + 3 plans + deck + flow)
-POST /api/agent/schedule             # validate AgentScheduleAction, return QueueAction
-POST /api/backend/worker/tick        # run priority engine + freeze sweep (preview by default)
-POST /api/backend/freeze/return      # analyzeFrozenTaskReturn for one entry
-POST /api/backend/schedule/plan      # standalone schedule plan
-GET  /api/backend/push/public-key    # VAPID public key (or `configured: false`)
-POST /api/backend/push/subscriptions # register a Web Push subscription
-POST /api/backend/push/send          # dispatch a single QueueAction
-POST /api/backend/import/review      # large-import review gate
-POST /api/backend/calendar/events    # ICS calendar event create/update
-GET  /api/backend/health             # health probe
-POST /api/backend/proof/export       # proof export
-POST /api/proof/export               # proof export (legacy alias)
-POST /api/backend/plan-mode          # plan-mode pass-through
-```
-
-## State and Types
-
-Shared types: `lib/types.ts`. Zustand store: `store/useNextCardStore.ts`.
-
-The store owns: `mode`, `inputs`, `analysis`, `plans`, `taskFlow`, `deck`
-(including the `frozenTasks` ledger), `proofs`, plus the chat/clarify state
-machine.
-
-Persistence schema is at version 4. v3 → v4 migration backfills
-`deck.frozenTasks: []` so old localStorage state still loads.
-
-When adding a feature, prefer adding a named store action over mutating
-nested state inside a UI component.
-
-## Mock AI
-
-Local fallbacks live in `lib/mock-ai.ts`:
-
-```text
-mockAnalyzeInput
-mockGeneratePlanOptions
-mockRegeneratePlanOptions
-mockGenerateClarifyingQuestion
-mockGenerateThinkingSteps
-mockGenerateTaskFlow
-mockGenerateDeckFromPlan
-mockGenerateTimePlanForCard
-mockUpdateCardUrgency
-mockRescheduleFrozenCard
-mockGenerateProofSummary
-```
-
-These remain deterministic and feed both the offline path and the always-three
-plan slots in the API responses, so the UI never sees fewer than three plans.
-
-## Suggested Next PRs
-
-1. Wire a real Service Worker registration so Web Push actually delivers in
-   the browser (the server side is wired; the client subscribe step is not).
-2. Add a periodic server-side worker tick (Vercel cron or a small Node
-   scheduler) so freeze returns and urgency thresholds fire even when the
-   tab is closed.
-3. Persist `agentDecision`/`requiresUserReview` actions to a real review
-   queue surface in `proof` so users can approve queued reminders.
-4. On-device WebView tuning: drag thresholds, double/triple-click, WebAudio,
-   safe-area, native back button.
-
-## Known Worktree Notes
-
-- `proof-03.html` is a static design reference, not part of the build.
-- The repository previously contained an `archive/` folder from prototype
-  cleanup; ignore unless the owner asks.
+---
 
 ## License
 
-MIT
+[MIT](./LICENSE)
