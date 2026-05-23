@@ -1,6 +1,13 @@
-# CODEX.md - Next Card Agent Instructions
+# Next Card · Product Requirements Document
 
-This document is the implementation contract for **Next Card**. Treat it like an AGENTS.md-style repo guide: follow these product rules, implementation constraints, and acceptance criteria when building or modifying the app.
+> 这是 Next Card 的**产品契约文档**(原 `AGENTS.md`),定义了产品规则、实现约束和验收标准。
+> AI Coding Agent 在构建或修改本应用时,需严格遵循此文档。
+>
+> - 想了解项目是什么、怎么跑 → 看 [README](../README.md)
+> - 想了解技术架构 → 看 [ARCHITECTURE.md](./ARCHITECTURE.md)
+> - 想了解产品规则与验收 → 继续阅读本文档
+
+---
 
 ## Project Goal
 
