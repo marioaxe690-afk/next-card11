@@ -19,6 +19,26 @@
 
 ---
 
+## Where this came from
+
+I'm a freshman majoring in Business Administration. Since the day I started college, I've been fighting one problem — **I can't get started on things.**
+
+- A 3,000-word reading reflection? Just seeing "3,000 words" freezes me.
+- "Read Chapter 1 of *Principles of Management* and make a mind map" — in my head it becomes a mountain, and I lie in bed scrolling my phone instead.
+- Sometimes I have a clean 3-hour window and somehow nothing gets done.
+
+It took me a while to realize it isn't laziness. It's that **tasks get described too big, too abstract, with no "next move."** "Read Chapter 1" is really 50 micro-actions in disguise, but nobody breaks them down for me, and I don't know which one to do first.
+
+Todo apps don't fix this — they take "Read Chapter 1" verbatim and slap a red exclamation mark on it to make me feel worse.
+
+So I used [Codex](https://openai.com/codex), [Claude Code](https://www.anthropic.com/claude-code), and ChatGPT — vibe-coding my way through — to build Next Card:
+
+- **AI decomposes goals into next-actions** — not "Read Chapter 1," but "Open the book, turn to page 1, read for 10 minutes."
+- **Cards visualize time pressure as burning/freezing** — guidance, not shame.
+- **Every action writes to proof** — you can actually see what you did today, instead of one more line crossed out.
+
+---
+
 ## What is this
 
 Next Card is **not another todo app**. It targets a specific person: someone with a thing they *want* to do but can't get started on — a paper deadline, a class they're about to miss, a vague "I should push on this today."
@@ -257,11 +277,19 @@ next-card11/
 
 ---
 
-## Author
+## About the Author
 
-Built by [@marioaxe690-afk](https://github.com/marioaxe690-afk). Originally a submission to an AI creation contest, now an open-source project under continued iteration.
+[@marioaxe690-afk](https://github.com/marioaxe690-afk) · Business Administration freshman
 
-For questions, collaboration, or feedback:
+This repo isn't "AI wrote my code." It's **I drove the product judgment; AI tools handled implementation**:
+
+- **Product framing, two-agent boundaries, runtime guard, provider cascade, anti-AI-tone prompt bans** — these calls are mine.
+- **Code generation, refactoring, debugging** — orchestrated across [Codex](https://openai.com/codex), [Claude Code](https://www.anthropic.com/claude-code), and ChatGPT, picking the right tool per task.
+- **Prompt engineering, state machines, type design** — iterated through AI tools until they held up.
+
+For early-stage startups, I think the scarce skill isn't "people who can write code" — it's **people who can decide what's worth doing, what isn't, and how to make AI tools produce trustworthy results.** This project is concrete evidence of that skill.
+
+Contact:
 
 - GitHub Issues: [next-card11/issues](https://github.com/marioaxe690-afk/next-card11/issues)
 - Email: marioaxe690@gmail.com

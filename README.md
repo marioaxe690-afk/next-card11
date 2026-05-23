@@ -19,6 +19,26 @@
 
 ---
 
+## 灵感来源
+
+我是工商管理专业大一学生,从入学开始就在和**执行力低**这个问题死磕——
+
+- 作业要写 3000 字读后感,光看到"3000 字"四个字就动不了
+- 老师布置"读完《管理学原理》第一章并做思维导图",我在脑子里把它堆成一座山,然后躺床上刷手机
+- 有时候明明有 3 小时空档,却一件事没做就过去了
+
+我意识到不是我懒——而是**任务被描述得太大、太抽象、没有"下一步"**。一个"读完第一章"在心里其实是 50 个微动作,但没人帮我拆,我也不知道哪个先做。
+
+Todo App 解决不了这个——它把"读完第一章"原封不动放进列表,然后用红色感叹号让我更焦虑。
+
+所以我用 [Codex](https://openai.com/codex)、[Claude Code](https://www.anthropic.com/claude-code) 和 ChatGPT,以 Vibe Coding 的方式一步步做了 Next Card——
+
+- **AI 把目标拆到"下一步动作"**:不是"读完第一章",而是"打开书,翻到第 1 页,读 10 分钟"
+- **任务卡片自己显示燃烧/冻结**:把时间压力翻译成视觉,引导而不是羞辱
+- **每个动作写进 proof**:看得见自己今天真的做了什么,不是又一行被划掉的字
+
+---
+
 ## 这是什么
 
 Next Card 不是又一个 Todo App。它面对一个具体的人:**有一件想做但动不起来的事**——可能是赶 ddl、要去一节快迟到的课、或者一个含糊的"今天该推一下"。
@@ -256,11 +276,19 @@ next-card11/
 
 ---
 
-## 作者
+## 关于作者
 
-本项目由 [@marioaxe690-afk](https://github.com/marioaxe690-afk) 开发,原为 AI 创作比赛参赛作品,现作为开源项目持续迭代。
+[@marioaxe690-afk](https://github.com/marioaxe690-afk) · 工商管理大一在读
 
-对项目有任何问题、合作意向或反馈,欢迎通过以下方式联系:
+这个仓库不是"AI 帮我写代码",而是**我主导产品判断,AI 协作完成实现**:
+
+- **产品定位、双 Agent 边界、runtime guard、provider cascade、反 AI 腔的 prompt 禁区**——这些判断由我做出
+- **代码生成、重构、调试**——协同使用 [Codex](https://openai.com/codex)、[Claude Code](https://www.anthropic.com/claude-code)、ChatGPT,按任务类型挑工具
+- **prompt 工程、状态机、类型设计**——在 AI 工具里反复打磨成型
+
+我相信对初创公司来说,真正稀缺的不是"会写代码的人",而是**会判断什么该做、什么不该做、能让 AI 工具产出可信结果的人**。这个项目是我这个能力的具体证据。
+
+联系方式:
 
 - GitHub Issues:[next-card11/issues](https://github.com/marioaxe690-afk/next-card11/issues)
 - Email:marioaxe690@gmail.com
