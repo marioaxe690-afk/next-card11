@@ -4,13 +4,16 @@
 
 **Turn vague goals into a swipeable card deck — and into visible evidence of action.**
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-online-success?logo=vercel)](https://next-card11-marioaxe690-afk.vercel.app)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Tailwind](https://img.shields.io/badge/Tailwind-3.4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Zustand](https://img.shields.io/badge/Zustand-5-orange)](https://github.com/pmndrs/zustand)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-[中文](./README.md) · [Architecture](./docs/ARCHITECTURE.md) · [Product Spec](./docs/PRD.md)
+**🚀 [Live Demo](https://next-card11-marioaxe690-afk.vercel.app)** · [中文](./README.md) · [Architecture](./docs/ARCHITECTURE.md) · [Product Spec](./docs/PRD.md)
+
+> Best viewed on mobile, or with browser DevTools mobile emulation (~430px wide) — this is built for a single-column WebView.
 
 </div>
 

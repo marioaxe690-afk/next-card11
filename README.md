@@ -4,13 +4,16 @@
 
 **把模糊的目标,变成可滑动的卡组,变成可见的行动证据。**
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-online-success?logo=vercel)](https://next-card11-marioaxe690-afk.vercel.app)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Tailwind](https://img.shields.io/badge/Tailwind-3.4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Zustand](https://img.shields.io/badge/Zustand-5-orange)](https://github.com/pmndrs/zustand)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-[English](./README.en.md) · [架构文档](./docs/ARCHITECTURE.md) · [产品契约](./docs/PRD.md)
+**🚀 [在线 Demo](https://next-card11-marioaxe690-afk.vercel.app)** · [English](./README.en.md) · [架构文档](./docs/ARCHITECTURE.md) · [产品契约](./docs/PRD.md)
+
+> 推荐用手机或浏览器开发者工具开启移动模拟(~430px 宽)体验,这是为单屏 WebView 设计的应用。
 
 </div>
 
