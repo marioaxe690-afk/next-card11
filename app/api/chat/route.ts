@@ -95,16 +95,20 @@ async function callPlanModeChat(body: ChatRequestBody, latestUserText: string) {
   };
 }
 
-// Endpoint, key, and model are intentionally hardcoded per project owner's
-// instruction. The endpoint is DeepSeek's Anthropic-compatible Messages API
-// (NOT the OpenAI-compatible /chat/completions). This means: x-api-key auth,
-// anthropic-version header, content array with thinking + text blocks, and
-// max_tokens lives at the top level of the request body.
-const DEEPSEEK_ANTHROPIC_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
-const DEEPSEEK_API_KEY_HARDCODED = "***REMOVED***";
-const DEEPSEEK_MODEL_HARDCODED = "deepseek-v4-pro";
+// Endpoint is DeepSeek's Anthropic-compatible Messages API (NOT the
+// OpenAI-compatible /chat/completions): x-api-key auth, anthropic-version
+// header, content array with thinking + text blocks, and max_tokens lives at
+// the top level of the request body.
+const DEEPSEEK_ANTHROPIC_ENDPOINT =
+  process.env.DEEPSEEK_BASE_URL?.replace(/\/+$/, "")
+    ? `${process.env.DEEPSEEK_BASE_URL.replace(/\/+$/, "")}/anthropic/v1/messages`
+    : "https://api.deepseek.com/anthropic/v1/messages";
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-pro";
 
 async function callDeepSeekChat(body: ChatRequestBody) {
+  if (!DEEPSEEK_API_KEY) return null;
+
   // Reasoning-class models (deepseek-v4-pro) spend a large slice of tokens on
   // hidden thinking blocks before emitting the JSON payload. 1600 leaves
   // nothing for actual output. The Next Card system prompt is long enough
@@ -115,7 +119,7 @@ async function callDeepSeekChat(body: ChatRequestBody) {
   // text block. One automatic retry catches the flake without making every
   // call wait twice. If both attempts are empty we fall through to local.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const text = await invokeDeepSeekOnce(body, maxTokens, attempt);
+    const text = await invokeDeepSeekOnce(body, maxTokens, attempt, DEEPSEEK_MODEL);
     if (text === null) return null; // hard error — don't retry
     if (text) {
       return {
@@ -140,17 +144,18 @@ async function callDeepSeekChat(body: ChatRequestBody) {
 async function invokeDeepSeekOnce(
   body: ChatRequestBody,
   maxTokens: number,
-  attempt: number
+  attempt: number,
+  model: string
 ): Promise<string | null | ""> {
   try {
     const response = await fetch(DEEPSEEK_ANTHROPIC_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": DEEPSEEK_API_KEY_HARDCODED,
+        "x-api-key": DEEPSEEK_API_KEY,
         "anthropic-version": "2023-06-01"
       },
-      body: JSON.stringify(buildAnthropicRequest(body, DEEPSEEK_MODEL_HARDCODED, maxTokens))
+      body: JSON.stringify(buildAnthropicRequest(body, model, maxTokens))
     });
 
     if (!response.ok) {
@@ -227,24 +232,24 @@ function buildAnthropicRequest(
   };
 }
 
-// Mimo provider — OpenAI-compatible Chat Completions protocol. This is the
-// hot backup that fires when DeepSeek is unreachable, throws, or returns
-// empty content twice in a row. Endpoint / key / model are hardcoded below;
-// fill in the latest values when handing them off here.
-//
-// TODO: hardcode real key + latest model name. Until then this layer is a
-// no-op (returns null fast) so the cascade falls through to local without
-// burning a request.
-const MIMO_OPENAI_ENDPOINT = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions";
-const MIMO_API_KEY_HARDCODED = "";
-const MIMO_MODEL_HARDCODED = "mimo-v2.5-pro";
+// Mimo provider — OpenAI-compatible Chat Completions protocol. Hot backup
+// that fires when DeepSeek is unreachable, throws, or returns empty content
+// twice in a row. Configure via MIMO_BASE_URL / MIMO_API_KEY / MIMO_MODEL;
+// when MIMO_API_KEY is unset this layer is a no-op (returns null fast) so
+// the cascade falls through to local without burning a request.
+const MIMO_OPENAI_ENDPOINT =
+  process.env.MIMO_BASE_URL?.replace(/\/+$/, "")
+    ? `${process.env.MIMO_BASE_URL.replace(/\/+$/, "")}/v1/chat/completions`
+    : "https://token-plan-cn.xiaomimimo.com/v1/chat/completions";
+const MIMO_API_KEY = process.env.MIMO_API_KEY ?? "";
+const MIMO_MODEL = process.env.MIMO_MODEL ?? "mimo-v2.5-pro";
 
 async function callMimoChat(body: ChatRequestBody): Promise<{
   payload: AIReplyPayload;
   fallback: boolean;
   provider: ChatProvider;
 } | null> {
-  if (!MIMO_API_KEY_HARDCODED) {
+  if (!MIMO_API_KEY) {
     return null;
   }
 
@@ -295,10 +300,10 @@ async function invokeMimoOnce(body: ChatRequestBody, attempt: number): Promise<s
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MIMO_API_KEY_HARDCODED}`
+          Authorization: `Bearer ${MIMO_API_KEY}`
         },
         body: JSON.stringify({
-          model: MIMO_MODEL_HARDCODED,
+          model: MIMO_MODEL,
           messages,
           response_format: { type: "json_object" },
           temperature: 0.35,
